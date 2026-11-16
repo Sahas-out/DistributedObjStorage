@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Sahas-out/DistributedFileStorage/pkg/protocol"
-	"github.com/Sahas-out/DistributedFileStorage/worker/internal/storage"
+	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
+	"github.com/Sahas-out/DistributedObjectStorage/worker/internal/storage"
 )
 
 // Server serves the worker chunk API on top of a Storage.
@@ -30,10 +30,14 @@ func NewServer(store storage.Storage, workerID string, maxChunk int64, log *slog
 // Handler returns the HTTP handler with all routes and middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /internal/chunks/{chunk_id}", s.handlePutChunk)
-	mux.HandleFunc("GET /internal/chunks/{chunk_id}", s.handleGetChunk)
-	mux.HandleFunc("DELETE /internal/chunks/{chunk_id}", s.handleDeleteChunk)
-	mux.HandleFunc("GET /internal/workers/{worker_id}/chunks", s.handleListChunks)
+	// Endpoints from docs/H-Design-Worker.md. The literal "metadata" pattern
+	// is more specific than {chunk_id}, so ServeMux routes
+	// GET /internals/chunks/metadata to the list handler.
+	mux.HandleFunc("PUT /internals/chunks/{chunk_id}", s.handlePutChunk)
+	mux.HandleFunc("GET /internals/chunks/{chunk_id}", s.handleGetChunk)
+	mux.HandleFunc("DELETE /internals/chunks/{chunk_id}", s.handleDeleteChunk)
+	mux.HandleFunc("GET /internals/chunks/metadata", s.handleListChunks)
+	// Not in the design doc: used by the Docker HEALTHCHECK.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return s.recoverPanics(s.logRequests(mux))
 }

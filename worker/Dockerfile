@@ -1,14 +1,19 @@
-# Build context is the repository root (the Go module root):
+# Build context is the repository root, because the worker module depends on
+# the root module (pkg/protocol) through `replace ... => ../` in worker/go.mod:
 #   docker build -f worker/Dockerfile -t dos-worker .
 
-FROM golang:1.22-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
+# Root module (shared pkg/protocol), then the worker module's dependency list,
+# so `go mod download` stays cached until go.mod/go.sum change.
 COPY go.mod ./
-# COPY go.sum ./   # uncomment once the module has dependencies
-RUN go mod download
 COPY pkg/ ./pkg/
-COPY worker/ ./worker/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./worker/cmd/worker
+COPY worker/go.mod worker/go.sum ./worker/
+WORKDIR /src/worker
+RUN go mod download
+COPY worker/ ./
+# The SQLite driver (modernc.org/sqlite) is pure Go, so the binary stays static.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
 
 FROM alpine:3.20
 RUN addgroup -S app && adduser -S -G app app \

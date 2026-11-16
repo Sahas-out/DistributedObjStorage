@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/Sahas-out/DistributedFileStorage/pkg/protocol"
+	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
 )
 
 // writeJSON writes v as a JSON response with the given status code.

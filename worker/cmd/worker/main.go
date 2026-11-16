@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Sahas-out/DistributedFileStorage/worker/internal/api"
-	"github.com/Sahas-out/DistributedFileStorage/worker/internal/config"
-	"github.com/Sahas-out/DistributedFileStorage/worker/internal/storage"
+	"github.com/Sahas-out/DistributedObjectStorage/worker/internal/api"
+	"github.com/Sahas-out/DistributedObjectStorage/worker/internal/config"
+	"github.com/Sahas-out/DistributedObjectStorage/worker/internal/storage"
 )
 
 func main() {
@@ -32,9 +32,18 @@ func run(logger *slog.Logger) error {
 	}
 	logger = logger.With("worker_id", cfg.WorkerID)
 
-	// TODO(person1): replace with storage.NewFilesystem(cfg.DataDir) once the
-	// filesystem implementation lands. Until then data lives in memory only.
-	var store storage.Storage = storage.NewMemory()
+	// Chunk files and the SQLite metadata table live in DATA_DIR (the Docker
+	// volume). Opening the store also reconciles files with metadata left by
+	// a previous run, so it finishes before the server starts listening.
+	store, err := storage.NewFilesystem(context.Background(), cfg.DataDir, logger)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			logger.Error("close storage", "error", err)
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

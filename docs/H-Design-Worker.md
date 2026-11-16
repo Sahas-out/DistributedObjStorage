@@ -31,3 +31,6 @@
 - get gets the object from storage(retrieve some metadata and data in file)
 - delete delete the object from storage (delete metadata entry and file)
 - list  retrieves all the metadata information
+
+
+

@@ -3,26 +3,33 @@ package protocol
 
 // HTTP headers used by the worker chunk API.
 const (
-	// HeaderChunkChecksum carries the SHA-256 hex digest of a chunk.
-	// On GET it is set by the worker; on PUT the caller may send it so the
-	// worker rejects the upload if the bytes don't match.
+	// HeaderChunkChecksum carries the SHA-256 hex digest of a chunk's data.
+	// The worker sets it on PUT and GET responses; on PUT the caller may send
+	// it so the worker rejects the upload if the data doesn't match.
 	HeaderChunkChecksum = "X-Chunk-Checksum"
-	// HeaderChunkSize carries the chunk size in bytes on GET responses.
+	// HeaderChunkSize carries the chunk data size in bytes on GET responses.
 	HeaderChunkSize = "X-Chunk-Size"
 )
 
-// ChunkInfo describes one stored chunk.
-type ChunkInfo struct {
-	ID       string `json:"chunk_id"`
-	Size     int64  `json:"size"`
-	Checksum string `json:"checksum"` // SHA-256 hex digest
+// Chunk is the body of PUT /internals/chunks/{chunk_id} and the response
+// body of GET /internals/chunks/{chunk_id} ("chunk_controller" in
+// docs/H-Design-Worker.md).
+//
+// Data is the raw chunk bytes; encoding/json transmits it as a standard
+// base64 string.
+type Chunk struct {
+	ObjectID   string `json:"object_id"`
+	SequenceNo int    `json:"sequence_no"`
+	Data       []byte `json:"data"`
 }
 
-// ChunkList is the response body of GET /internal/workers/{worker_id}/chunks.
-type ChunkList struct {
-	WorkerID string      `json:"worker_id"`
-	Count    int         `json:"count"`
-	Chunks   []ChunkInfo `json:"chunks"`
+// ChunkMetadata describes one stored chunk ("chunk_metadata_controller" in
+// docs/H-Design-Worker.md). GET /internals/chunks/metadata returns a JSON
+// array of these; PUT returns one for the stored chunk.
+type ChunkMetadata struct {
+	ChunkID    string `json:"chunk_id"`
+	ObjectID   string `json:"object_id"`
+	SequenceNo int    `json:"sequence_no"`
 }
 
 // ErrorResponse is the JSON body of every error response.

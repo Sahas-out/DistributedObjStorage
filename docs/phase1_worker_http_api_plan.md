@@ -4,7 +4,7 @@
 Phase 1 is to build one standalone Worker that stores chunks and exposes them over HTTP (`docs/phase1_project_blueprint.md`). The user is Person 2 and owns the HTTP layer: the routes, the chunk handlers, validation, the error format, the server wiring and the handler tests. Person 1 owns the filesystem storage. The repo is empty apart from docs. This plan creates the Go module, the agreed `Storage` interface, an in-memory stub so the worker runs now, the API package and its tests, `main.go`, and the Docker files.
 
 ## Decisions locked in
-- **Go and routing:** `go 1.22` in go.mod. Module path is `github.com/Sahas-out/DistributedFileStorage` (the origin remote). Routing uses only the standard library 1.22 `ServeMux` (`"PUT /internal/chunks/{chunk_id}"` with `r.PathValue`). No third-party dependencies.
+- **Go and routing:** `go 1.22` in go.mod. Module path is `github.com/Sahas-out/DistributedObjectStorage` (the origin remote). Routing uses only the standard library 1.22 `ServeMux` (`"PUT /internal/chunks/{chunk_id}"` with `r.PathValue`). No third-party dependencies.
 - **Chunk ID:** must match `^[A-Za-z0-9_-]{1,128}$`, otherwise `400 invalid_chunk_id`.
 - **Errors:** every error is JSON: `{"error":{"code":"...","message":"..."}}`, sent with `Content-Type: application/json`.
 - **PUT** `/internal/chunks/{id}`:
@@ -26,7 +26,7 @@ Phase 1 is to build one standalone Worker that stores chunks and exposes them ov
 ## Files to create
 | File | Contents |
 |---|---|
-| `go.mod` | `module github.com/Sahas-out/DistributedFileStorage`, `go 1.22` |
+| `go.mod` | `module github.com/Sahas-out/DistributedObjectStorage`, `go 1.22` |
 | `pkg/protocol/chunk.go` | `ChunkInfo{ID,Size,Checksum}` with the agreed JSON tags; `ChunkList`; `ErrorResponse`/`ErrorBody`; constants `HeaderChunkChecksum = "X-Chunk-Checksum"` and `HeaderChunkSize = "X-Chunk-Size"` |
 | `worker/internal/storage/storage.go` | The `Storage` interface exactly as in the blueprint; the `ChunkInfo` alias; sentinel errors `ErrNotFound`, `ErrInvalidChunkID`, `ErrMissingChecksum`; a comment marking it as the shared contract with Person 1 |
 | `worker/internal/storage/memory.go` | `NewMemory()`: an in-memory implementation backed by a map and a `sync.RWMutex` that computes SHA-256 on `Put`, returns sorted results from `List`, and returns `ErrNotFound` for missing chunks. It's a stand-in until Person 1's `filesystem.go` lands. |
