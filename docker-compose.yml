@@ -1,4 +1,24 @@
 services:
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    image: dos-controller:latest
+    container_name: controller
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+      # Compose's network resolves the service name "worker1" to its container.
+      WORKER_URL: http://worker1:8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - controller-data:/data
+    depends_on:
+      worker1:
+        condition: service_healthy
+    restart: unless-stopped
+
   worker1:
     build:
       context: .
@@ -16,4 +36,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  controller-data:
   worker1-data:

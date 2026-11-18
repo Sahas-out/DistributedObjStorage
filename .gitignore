@@ -36,5 +36,8 @@ go.work.sum
 # Local worker data (DATA_DIR=./data)
 worker/data/
 
+# Local controller data (DATA_DIR=./data)
+controller/data/
+
 # learning folder
 learn/

@@ -2,7 +2,76 @@
 
 A mini distributed cloud object store: one controller, four storage workers, and clients. Objects are split into 1 MiB chunks and each chunk is stored on two workers. See [docs/Mini_Distributed_Cloud_Object_Store.pdf](docs/Mini_Distributed_Cloud_Object_Store.pdf) for the project statement.
 
-**Current status: Phase 1.** One standalone worker that stores chunks and serves them over HTTP. See [docs/phase1_project_blueprint.md](docs/phase1_project_blueprint.md) and [docs/phase1_worker_http_api_plan.md](docs/phase1_worker_http_api_plan.md).
+**Current status: Phase 2.** A client can upload and download objects through the controller, which splits them into chunks stored on a single worker. Multiple workers, replication and failure handling come in later phases.
+
+## Quick start: try the whole flow
+
+```sh
+docker compose up --build -d      # controller on :8080, worker1 on :8081
+docker compose ps                 # both should show (healthy)
+
+head -c 5242880 /dev/urandom > original.bin      # a 5 MiB test file
+
+# Upload. The response contains the object_id.
+curl -s -T original.bin http://localhost:8080/api/v1/objects
+ID=<object_id from the response>
+
+# Download and compare.
+curl -s -o downloaded.bin http://localhost:8080/api/v1/objects/$ID
+cmp original.bin downloaded.bin && echo "bytes match"
+
+# See the 5 chunks on the worker.
+curl -s http://localhost:8081/internals/chunks/metadata
+
+# Metadata and chunks survive recreating the containers...
+docker compose down
+docker compose up -d
+curl -s -o again.bin http://localhost:8080/api/v1/objects/$ID
+cmp original.bin again.bin && echo "still there"
+
+# ...until the volumes are deleted.
+docker compose down -v
+```
+
+## Controller HTTP API
+
+| Method | Endpoint | Success | Notes |
+|---|---|---|---|
+| `PUT` | `/api/v1/objects` | `201` + `ObjectInfo` JSON | The request body is the raw object. The controller generates the object ID. |
+| `GET` | `/api/v1/objects/{object_id}` | `200` + raw bytes | Sends `Content-Length` and `ETag` (the object's SHA-256). `HEAD` returns the headers only. |
+| `GET` | `/healthz` | `200` | Used by the Docker health check. |
+
+```json
+{"object_id": "5f2c...", "size": 5242880, "checksum": "<sha256>", "chunk_count": 5, "created_at": "2026-11-18T10:00:00Z"}
+```
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `invalid_object_id` | The ID is not 32 lowercase hex characters |
+| 400 | `upload_incomplete` | The client stopped sending before the upload finished; nothing is stored |
+| 404 | `object_not_found` | No object has this ID |
+| 405 | `method_not_allowed` | The endpoint doesn't support this method |
+| 500 | `object_corrupted` | A chunk is missing from the worker or failed its checksum |
+| 500 | `internal_error` | Any other controller failure; details are logged |
+| 503 | `worker_unavailable` | The worker can't be reached or failed to serve the request |
+
+If a chunk fails after a download has started, the `200` has already been sent, so the controller aborts the connection. The client then receives fewer bytes than `Content-Length` and sees an error (curl exits with code 18).
+
+### How an upload and a download work
+
+- **Upload:** the controller reads the body into one reusable 1 MiB buffer and sends each chunk to the worker before reading the next, so memory use doesn't grow with object size. Metadata is committed in one SQLite transaction after the last chunk is stored. If anything fails, the chunks already sent are deleted and no object is created.
+- **Download:** the controller loads the ordered chunk list, then fetches, verifies (SHA-256) and writes one chunk at a time.
+
+The controller keeps its metadata in `DATA_DIR/metadata.db`, in two tables: `objects` (ID, size, checksum, chunk count, creation time) and `object_chunks` (sequence number, chunk ID, size, checksum).
+
+### Controller configuration (environment variables)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | HTTP listen port |
+| `DATA_DIR` | `/data` | Directory for `metadata.db` (created if missing) |
+| `WORKER_URL` | `http://worker1:8080` | Base URL of the worker, using its Docker service name |
+| `WORKER_TIMEOUT` | `30s` | Time limit for each chunk request to the worker |
 
 ### Worker storage
 
@@ -26,6 +95,14 @@ worker/internal/api/   HTTP routes, handlers, middleware, handler tests
 worker/internal/storage/  Storage interface (shared contract), filesystem + SQLite store
 worker/internal/config/   environment-based configuration
 worker/Dockerfile
+controller/cmd/controller/    controller entry point
+controller/internal/api/      client-facing routes and handlers
+controller/internal/object/   upload and download orchestration
+controller/internal/chunk/    splits a stream into 1 MiB chunks
+controller/internal/metadata/ SQLite object and chunk metadata
+controller/internal/workers/  HTTP client for the worker API
+controller/internal/config/   environment-based configuration
+controller/Dockerfile
 docker-compose.yml
 ```
 
@@ -36,7 +113,7 @@ docker-compose.yml
 
 ## Build, test, run
 
-The worker is its own Go module, so run Go commands from `worker/`:
+The worker and the controller are separate Go modules, so run Go commands from their directories. The same `go vet` and `go test` commands work in `controller/`:
 
 ```sh
 cd worker
@@ -50,13 +127,13 @@ PORT=8081 WORKER_ID=worker1 DATA_DIR=./data go run ./cmd/worker
 ### Docker
 
 ```sh
-docker compose up --build -d     # worker1 on http://localhost:8081
+docker compose up --build -d     # controller on :8080, worker1 on :8081
 docker compose ps                # should show (healthy)
-docker compose logs -f worker1
-docker compose down              # add -v to also delete the data volume
+docker compose logs -f controller worker1
+docker compose down              # add -v to also delete the data volumes
 ```
 
-### Configuration (environment variables)
+### Worker configuration (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
