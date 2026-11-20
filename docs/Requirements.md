@@ -1,8 +1,8 @@
 ##  Functional Requirements
-1. Persistentent storage of the object in distributed environment with worker nodes with replication factor of 2.
+1. Persistentent storage of the object in distributed environment uploaded by client with worker nodes with replication factor of 2.
 2. Persistent storage of objects metadata.
 3. CRUD operation service on metadata.
-4. Provide stored objects located in a distributed environment to concerned users.
+4. Provide stored objects and  located in a distributed environment to concerned users.
 5. Must be eventually available in case of worker node failure.
 6. Maintain data integerity in case of corruption of data in one of worker node.
 

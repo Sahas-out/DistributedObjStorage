@@ -1,0 +1,655 @@
+{
+  "info": {
+    "name": "DOS Worker API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Worker chunk API. Responses saved as examples were captured from a real dos-worker container."
+  },
+  "item": [
+    {
+      "name": "Health check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/healthz",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "healthz"
+          ]
+        },
+        "description": "Used by the Docker HEALTHCHECK."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": "Used by the Docker HEALTHCHECK."
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": \"ok\",\n  \"worker_id\": \"worker1\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "PUT chunk-001 (with checksum)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Chunk-Checksum",
+            "value": "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/internals/chunks/chunk-001",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "internals",
+            "chunks",
+            "chunk-001"
+          ]
+        },
+        "description": "data is base64 of 'Hello, world!'. X-Chunk-Checksum (optional) is SHA-256 hex of the RAW bytes, not the base64.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 0,\n  \"data\": \"SGVsbG8sIHdvcmxkIQ==\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "201 Created",
+          "originalRequest": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Chunk-Checksum",
+                "value": "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-001"
+              ]
+            },
+            "description": "data is base64 of 'Hello, world!'. X-Chunk-Checksum (optional) is SHA-256 hex of the RAW bytes, not the base64.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 0,\n  \"data\": \"SGVsbG8sIHdvcmxkIQ==\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "X-Chunk-Checksum",
+              "value": "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"
+            }
+          ],
+          "body": "{\n  \"chunk_id\": \"chunk-001\",\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 0\n}"
+        }
+      ]
+    },
+    {
+      "name": "PUT chunk-002 (no checksum)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/internals/chunks/chunk-002",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "internals",
+            "chunks",
+            "chunk-002"
+          ]
+        },
+        "description": "data is base64 of 'Second chunk'.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 1,\n  \"data\": \"U2Vjb25kIGNodW5r\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "201 Created",
+          "originalRequest": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-002",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-002"
+              ]
+            },
+            "description": "data is base64 of 'Second chunk'.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 1,\n  \"data\": \"U2Vjb25kIGNodW5r\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "X-Chunk-Checksum",
+              "value": "4dfedc641158b8c314dd07950d12397a47f59ff0276340d8bf43702945773672"
+            }
+          ],
+          "body": "{\n  \"chunk_id\": \"chunk-002\",\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 1\n}"
+        }
+      ]
+    },
+    {
+      "name": "GET chunk-001",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/internals/chunks/chunk-001",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "internals",
+            "chunks",
+            "chunk-001"
+          ]
+        },
+        "description": ""
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-001"
+              ]
+            },
+            "description": ""
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "X-Chunk-Checksum",
+              "value": "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"
+            },
+            {
+              "key": "X-Chunk-Size",
+              "value": "13"
+            }
+          ],
+          "body": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 0,\n  \"data\": \"SGVsbG8sIHdvcmxkIQ==\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "List all chunk metadata",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/internals/chunks/metadata",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "internals",
+            "chunks",
+            "metadata"
+          ]
+        },
+        "description": ""
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/metadata",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "metadata"
+              ]
+            },
+            "description": ""
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "[\n  {\n    \"chunk_id\": \"chunk-001\",\n    \"object_id\": \"obj-42\",\n    \"sequence_no\": 0\n  },\n  {\n    \"chunk_id\": \"chunk-002\",\n    \"object_id\": \"obj-42\",\n    \"sequence_no\": 1\n  }\n]"
+        }
+      ]
+    },
+    {
+      "name": "DELETE chunk-002",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/internals/chunks/chunk-002",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "internals",
+            "chunks",
+            "chunk-002"
+          ]
+        },
+        "description": "Idempotent: deleting a missing chunk also returns 204."
+      },
+      "response": [
+        {
+          "name": "204 No Content",
+          "originalRequest": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-002",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-002"
+              ]
+            },
+            "description": "Idempotent: deleting a missing chunk also returns 204."
+          },
+          "status": "No Content",
+          "code": 204,
+          "_postman_previewlanguage": "text",
+          "header": [],
+          "body": ""
+        }
+      ]
+    },
+    {
+      "name": "Error cases",
+      "item": [
+        {
+          "name": "GET deleted chunk -> 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-002",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-002"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "404 Not Found",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/internals/chunks/chunk-002",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "internals",
+                    "chunks",
+                    "chunk-002"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"chunk_not_found\",\n    \"message\": \"chunk chunk-002 not found\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "PUT with wrong checksum -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Chunk-Checksum",
+                "value": "0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-003",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-003"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 2,\n  \"data\": \"SGVsbG8=\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "400 Bad Request",
+              "originalRequest": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Chunk-Checksum",
+                    "value": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/internals/chunks/chunk-003",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "internals",
+                    "chunks",
+                    "chunk-003"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 2,\n  \"data\": \"SGVsbG8=\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"checksum_mismatch\",\n    \"message\": \"data checksum 185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969 does not match X-Chunk-Checksum\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "PUT missing sequence_no -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/chunk-003",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "chunk-003"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"object_id\": \"obj-42\",\n  \"data\": \"SGVsbG8=\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "400 Bad Request",
+              "originalRequest": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/internals/chunks/chunk-003",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "internals",
+                    "chunks",
+                    "chunk-003"
+                  ]
+                },
+                "description": "",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"object_id\": \"obj-42\",\n  \"data\": \"SGVsbG8=\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"invalid_request\",\n    \"message\": \"sequence_no is required and must be a non-negative integer\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Invalid chunk id -> 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internals/chunks/bad.id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "bad.id"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "400 Bad Request",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/internals/chunks/bad.id",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "internals",
+                    "chunks",
+                    "bad.id"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"invalid_chunk_id\",\n    \"message\": \"chunk id must be 1-128 characters from [A-Za-z0-9_-]\"\n  }\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    }
+  ]
+}

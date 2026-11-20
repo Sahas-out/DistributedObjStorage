@@ -1,0 +1,858 @@
+{
+  "info": {
+    "name": "DOS Controller API (with worker)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Client-facing controller API. Saved example responses were captured from a real controller + worker1 docker compose stack. Run 'Upload text object' first so {{objectId}} is set."
+  },
+  "item": [
+    {
+      "name": "Controller health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/healthz",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "healthz"
+          ]
+        },
+        "description": ""
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": ""
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": \"ok\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Upload text object",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects"
+          ]
+        },
+        "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores them on the worker. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
+        "body": {
+          "mode": "raw",
+          "raw": "Hello, distributed world!",
+          "options": {
+            "raw": {
+              "language": "text"
+            }
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "201 Created",
+          "originalRequest": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects"
+              ]
+            },
+            "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores them on the worker. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
+            "body": {
+              "mode": "raw",
+              "raw": "Hello, distributed world!",
+              "options": {
+                "raw": {
+                  "language": "text"
+                }
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "ETag",
+              "value": "\"cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b\""
+            },
+            {
+              "key": "Location",
+              "value": "/api/v1/objects/4537785f9fe84ec13ac9d350daf00de8"
+            }
+          ],
+          "body": "{\n  \"object_id\": \"4537785f9fe84ec13ac9d350daf00de8\",\n  \"size\": 25,\n  \"checksum\": \"cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b\",\n  \"chunk_count\": 1,\n  \"created_at\": \"2026-11-20T17:01:25.250874684Z\"\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  pm.collectionVariables.set('objectId', pm.response.json().object_id);",
+              "  console.log('saved objectId =', pm.response.json().object_id);",
+              "}",
+              "pm.test('201 Created', () => pm.response.to.have.status(201));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload a file (pick one >1 MiB to see multiple chunks)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/octet-stream"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects"
+          ]
+        },
+        "description": "In the Body tab, choose 'binary' and select a file. Example: a 2.5 MiB file is stored as 3 chunks.",
+        "body": {
+          "mode": "file",
+          "file": {
+            "src": ""
+          }
+        }
+      },
+      "response": [
+        {
+          "name": "201 Created",
+          "originalRequest": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/octet-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects"
+              ]
+            },
+            "description": "In the Body tab, choose 'binary' and select a file. Example: a 2.5 MiB file is stored as 3 chunks.",
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": ""
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "ETag",
+              "value": "\"e2482c90bbd0bf7f0de167c8f6524ecb378fd1f1c51a48edf28fd08595614497\""
+            },
+            {
+              "key": "Location",
+              "value": "/api/v1/objects/a588fbde11d83f39d7b92bc75a4bb90f"
+            }
+          ],
+          "body": "{\n  \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n  \"size\": 2621440,\n  \"checksum\": \"e2482c90bbd0bf7f0de167c8f6524ecb378fd1f1c51a48edf28fd08595614497\",\n  \"chunk_count\": 3,\n  \"created_at\": \"2026-11-20T17:01:25.479265105Z\"\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201) {",
+              "  pm.collectionVariables.set('objectId', pm.response.json().object_id);",
+              "  console.log('saved objectId =', pm.response.json().object_id);",
+              "}",
+              "pm.test('201 Created', () => pm.response.to.have.status(201));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Download object",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects",
+            "{{objectId}}"
+          ]
+        },
+        "description": "Uses {{objectId}} from the last upload. For binary files, use 'Save response > Save to a file'."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "{{objectId}}"
+              ]
+            },
+            "description": "Uses {{objectId}} from the last upload. For binary files, use 'Save response > Save to a file'."
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "text",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/octet-stream"
+            },
+            {
+              "key": "Content-Length",
+              "value": "25"
+            },
+            {
+              "key": "ETag",
+              "value": "\"cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b\""
+            }
+          ],
+          "body": "Hello, distributed world!"
+        }
+      ]
+    },
+    {
+      "name": "HEAD object (metadata only)",
+      "request": {
+        "method": "HEAD",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects",
+            "{{objectId}}"
+          ]
+        },
+        "description": "Returns the headers without contacting the worker."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "HEAD",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "{{objectId}}"
+              ]
+            },
+            "description": "Returns the headers without contacting the worker."
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "text",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/octet-stream"
+            },
+            {
+              "key": "Content-Length",
+              "value": "25"
+            },
+            {
+              "key": "ETag",
+              "value": "\"cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b\""
+            }
+          ],
+          "body": ""
+        }
+      ]
+    },
+    {
+      "name": "Inspect worker directly",
+      "description": "Shows the chunks the controller stored on worker1 (host port 8081). Chunk IDs are <object_id>_<sequence_no>.",
+      "item": [
+        {
+          "name": "Worker: list chunk metadata",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{workerUrl}}/internals/chunks/metadata",
+              "host": [
+                "{{workerUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "metadata"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{workerUrl}}/internals/chunks/metadata",
+                  "host": [
+                    "{{workerUrl}}"
+                  ],
+                  "path": [
+                    "internals",
+                    "chunks",
+                    "metadata"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "[\n  {\n    \"chunk_id\": \"4537785f9fe84ec13ac9d350daf00de8_0\",\n    \"object_id\": \"4537785f9fe84ec13ac9d350daf00de8\",\n    \"sequence_no\": 0\n  },\n  {\n    \"chunk_id\": \"a588fbde11d83f39d7b92bc75a4bb90f_0\",\n    \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n    \"sequence_no\": 0\n  },\n  {\n    \"chunk_id\": \"a588fbde11d83f39d7b92bc75a4bb90f_1\",\n    \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n    \"sequence_no\": 1\n  },\n  {\n    \"chunk_id\": \"a588fbde11d83f39d7b92bc75a4bb90f_2\",\n    \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n    \"sequence_no\": 2\n  }\n]"
+            }
+          ]
+        },
+        {
+          "name": "Worker: get first chunk of last object",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{workerUrl}}/internals/chunks/{{objectId}}_0",
+              "host": [
+                "{{workerUrl}}"
+              ],
+              "path": [
+                "internals",
+                "chunks",
+                "{{objectId}}_0"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{workerUrl}}/internals/chunks/{{objectId}}_0",
+                  "host": [
+                    "{{workerUrl}}"
+                  ],
+                  "path": [
+                    "internals",
+                    "chunks",
+                    "{{objectId}}_0"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "X-Chunk-Checksum",
+                  "value": "cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b"
+                },
+                {
+                  "key": "X-Chunk-Size",
+                  "value": "25"
+                }
+              ],
+              "body": "{\n  \"object_id\": \"4537785f9fe84ec13ac9d350daf00de8\",\n  \"sequence_no\": 0,\n  \"data\": \"SGVsbG8sIGRpc3RyaWJ1dGVkIHdvcmxkIQ==\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Worker: health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{workerUrl}}/healthz",
+              "host": [
+                "{{workerUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{workerUrl}}/healthz",
+                  "host": [
+                    "{{workerUrl}}"
+                  ],
+                  "path": [
+                    "healthz"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"ok\",\n  \"worker_id\": \"worker1\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Error cases",
+      "item": [
+        {
+          "name": "Unknown object -> 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/0123456789abcdef0123456789abcdef",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "0123456789abcdef0123456789abcdef"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "404 Not Found",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/objects/0123456789abcdef0123456789abcdef",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "objects",
+                    "0123456789abcdef0123456789abcdef"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"object_not_found\",\n    \"message\": \"object 0123456789abcdef0123456789abcdef not found\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Invalid object id -> 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/hello",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "hello"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "400 Bad Request",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/objects/hello",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "objects",
+                    "hello"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"invalid_object_id\",\n    \"message\": \"object id must be 32 lowercase hex characters\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Wrong method -> 405",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "405 Method Not Allowed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/objects",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "objects"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "Method Not Allowed",
+              "code": 405,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Allow",
+                  "value": "PUT"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"method_not_allowed\",\n    \"message\": \"method not allowed; use PUT\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Unknown endpoint -> 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/foo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "foo"
+              ]
+            },
+            "description": ""
+          },
+          "response": [
+            {
+              "name": "404 Not Found",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/foo",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "foo"
+                  ]
+                },
+                "description": ""
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"not_found\",\n    \"message\": \"no such endpoint\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Download while worker is stopped -> 503",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "{{objectId}}"
+              ]
+            },
+            "description": "First run: docker stop worker1. Afterwards: docker start worker1."
+          },
+          "response": [
+            {
+              "name": "503 Service Unavailable",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "objects",
+                    "{{objectId}}"
+                  ]
+                },
+                "description": "First run: docker stop worker1. Afterwards: docker start worker1."
+              },
+              "status": "Service Unavailable",
+              "code": 503,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"worker_unavailable\",\n    \"message\": \"storage worker is unavailable; try again later\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Upload while worker is stopped -> 503",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects"
+              ]
+            },
+            "description": "First run: docker stop worker1.",
+            "body": {
+              "mode": "raw",
+              "raw": "x"
+            }
+          },
+          "response": [
+            {
+              "name": "503 Service Unavailable",
+              "originalRequest": {
+                "method": "PUT",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/objects",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "objects"
+                  ]
+                },
+                "description": "First run: docker stop worker1.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "x"
+                }
+              },
+              "status": "Service Unavailable",
+              "code": 503,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Connection",
+                  "value": "close"
+                }
+              ],
+              "body": "{\n  \"error\": {\n    \"code\": \"worker_unavailable\",\n    \"message\": \"storage worker is unavailable; try again later\"\n  }\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "workerUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "objectId",
+      "value": "4537785f9fe84ec13ac9d350daf00de8"
+    }
+  ]
+}

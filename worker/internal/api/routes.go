@@ -37,7 +37,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internals/chunks/{chunk_id}", s.handleGetChunk)
 	mux.HandleFunc("DELETE /internals/chunks/{chunk_id}", s.handleDeleteChunk)
 	mux.HandleFunc("GET /internals/chunks/metadata", s.handleListChunks)
-	// Not in the design doc: used by the Docker HEALTHCHECK.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return s.recoverPanics(s.logRequests(mux))
 }
@@ -49,6 +48,7 @@ type statusRecorder struct {
 	bytes  int64
 }
 
+// used to write http status lines
 func (r *statusRecorder) WriteHeader(code int) {
 	if r.status == 0 {
 		r.status = code
