@@ -1,5 +1,5 @@
-// Command controller runs the client-facing object API and orchestrates chunk
-// storage on the worker.
+// Command controller runs the client-facing object API, accepts worker
+// registrations and orchestrates replicated chunk storage across workers.
 package main
 
 import (
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/api"
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/config"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/metadata"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/object"
@@ -45,14 +46,19 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	worker := workers.NewClient(cfg.WorkerURL, cfg.WorkerTimeout)
-	objects := object.NewService(worker, store, protocol.DefaultChunkSize, logger)
+	// The worker and chunk tables live only in memory; they fill up as
+	// workers register and report their chunks.
+	client := workers.NewClient(cfg.WorkerTimeout)
+	registry := cluster.NewRegistry(cluster.LeastLoaded{})
+	members := cluster.NewMembership(registry, client, store, cfg.AnnounceInterval, cfg.WorkerTimeout, logger)
+	defer members.Close()
+	objects := object.NewService(client, store, registry, cfg.ReplicationFactor, protocol.DefaultChunkSize, logger)
 
 	// No ReadTimeout or WriteTimeout: they cap a whole request, and transferring
 	// a large object can legitimately take a long time.
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           api.NewServer(objects, store.Ping, logger).Handler(),
+		Handler:           api.NewServer(objects, members, store.Ping, logger).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -62,7 +68,7 @@ func run(logger *slog.Logger) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("controller listening", "addr", srv.Addr, "data_dir", cfg.DataDir, "worker_url", cfg.WorkerURL)
+		logger.Info("controller listening", "addr", srv.Addr, "data_dir", cfg.DataDir, "replication_factor", cfg.ReplicationFactor)
 		errCh <- srv.ListenAndServe()
 	}()
 

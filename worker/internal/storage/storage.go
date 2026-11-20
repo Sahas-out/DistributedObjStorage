@@ -22,9 +22,12 @@ type ChunkMetadata struct {
 	SequenceNo int       // chunk's position in the object
 	FilePath   string    // location of the chunk file, relative to the data directory
 	Size       int64     // chunk size in bytes
-	Checksum   string    // SHA-256 hex digest, for integrity verification
 	CreatedAt  time.Time // when the chunk was stored
 }
+
+// The worker deliberately stores no checksum. Integrity is checked by the
+// controller against its own metadata, so a corrupted replica on one worker
+// is caught and another replica can be used instead.
 
 // MaxChunkIDLength is the longest accepted chunk ID.
 const MaxChunkIDLength = 128
@@ -45,17 +48,14 @@ var (
 	// ErrInvalidChunkID is returned when the chunk ID is malformed or would
 	// escape the storage directory.
 	ErrInvalidChunkID = errors.New("invalid chunk id")
-	// ErrMissingChecksum is returned when a chunk exists but its recorded
-	// checksum metadata is missing or unreadable.
-	ErrMissingChecksum = errors.New("chunk checksum metadata missing")
 )
 
 // Storage persists chunks and their metadata.
 type Storage interface {
 	// Put stores (or overwrites) a chunk: it registers the metadata entry and
 	// stores the data. The caller sets ChunkID, ObjectID and SequenceNo in
-	// meta; the store fills in FilePath, Size, Checksum and CreatedAt and
-	// returns the complete record.
+	// meta; the store fills in FilePath, Size and CreatedAt and returns the
+	// complete record.
 	Put(ctx context.Context, meta ChunkMetadata, src io.Reader) (ChunkMetadata, error)
 	// Open returns the stored chunk data and its metadata.
 	// The caller must close the reader.

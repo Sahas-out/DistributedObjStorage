@@ -1,4 +1,5 @@
-// Package api implements the controller's client-facing HTTP API.
+// Package api implements the controller's HTTP API: the client-facing object
+// API under /api/v1 and the internal worker API under /internal.
 package api
 
 import (
@@ -7,37 +8,60 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/object"
 	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
 )
 
-// Server serves the object API.
+// Server serves the object API and the internal worker API.
 type Server struct {
 	objects *object.Service
+	members *cluster.Membership
 	ping    func(context.Context) error
 	log     *slog.Logger
 }
 
 // NewServer builds a Server. ping reports whether the metadata store is usable
 // and backs the health check. A nil logger discards logs.
-func NewServer(objects *object.Service, ping func(context.Context) error, log *slog.Logger) *Server {
+func NewServer(objects *object.Service, members *cluster.Membership, ping func(context.Context) error, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Server{objects: objects, ping: ping, log: log}
+	return &Server{objects: objects, members: members, ping: ping, log: log}
 }
 
 // Handler returns the HTTP handler with all routes and middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// Client API.
 	mux.HandleFunc("PUT /api/v1/objects", s.handleUpload)
+	mux.HandleFunc("GET /api/v1/objects", s.handleList)
 	mux.HandleFunc("GET /api/v1/objects/{object_id}", s.handleDownload)
+	mux.HandleFunc("DELETE /api/v1/objects/{object_id}", s.handleDelete)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+
+	// Internal API used by workers, plus read-only views of the cluster
+	// state for debugging and demos.
+	mux.HandleFunc("POST /internal/workers/register", s.handleRegister)
+	mux.HandleFunc("GET /internal/workers", s.handleListWorkers)
+	mux.HandleFunc("DELETE /internal/workers/{worker_id}", s.handleDeregister)
+	mux.HandleFunc("GET /internal/objects/{object_id}/replicas", s.handleReplicas)
 
 	// Catch-alls so these responses use the JSON error format too. More
 	// specific patterns above take priority.
-	mux.HandleFunc("/api/v1/objects", methodNotAllowed(http.MethodPut))
-	mux.HandleFunc("/api/v1/objects/{object_id}", methodNotAllowed(http.MethodGet+", "+http.MethodHead))
+	mux.HandleFunc("/api/v1/objects", methodNotAllowed(http.MethodGet+", "+http.MethodHead+", "+http.MethodPut))
+	mux.HandleFunc("/api/v1/objects/{object_id}", methodNotAllowed(http.MethodGet+", "+http.MethodHead+", "+http.MethodDelete))
+	mux.HandleFunc("/internal/workers", methodNotAllowed(http.MethodGet+", "+http.MethodHead))
+	// One catch-all covers /internal/workers/register too: a separate one
+	// would conflict with "DELETE /internal/workers/{worker_id}".
+	mux.HandleFunc("/internal/workers/{worker_id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("worker_id") == "register" {
+			methodNotAllowed(http.MethodPost)(w, r)
+			return
+		}
+		methodNotAllowed(http.MethodDelete)(w, r)
+	})
+	mux.HandleFunc("/internal/objects/{object_id}/replicas", methodNotAllowed(http.MethodGet+", "+http.MethodHead))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, protocol.CodeNotFound, "no such endpoint")
 	})

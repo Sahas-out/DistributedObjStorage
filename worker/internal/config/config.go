@@ -3,35 +3,43 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // DefaultMaxChunkBytes is 1 MiB.
 const DefaultMaxChunkBytes int64 = 1 << 20
 
 // Config holds worker settings.
+//
+// The worker has no configured ID: the controller assigns one at the first
+// registration and the worker keeps it in its data directory.
 type Config struct {
-	WorkerID      string // WORKER_ID, defaults to the hostname
 	Port          int    // PORT, default 8080
-	DataDir       string // DATA_DIR, default /data
+	DataDir       string // DATA_DIR, default /data; used when DataRoot is empty
 	MaxChunkBytes int64  // MAX_CHUNK_BYTES, default 1 MiB
+
+	// DataRoot (DATA_ROOT) enables slot mode for scaled deployments: several
+	// workers share one volume and each claims its own slot-<n> directory
+	// under DataRoot. Empty means use DataDir directly.
+	DataRoot string
+
+	ControllerURL    string        // CONTROLLER_URL, default http://controller:8080
+	AnnounceInterval time.Duration // ANNOUNCE_INTERVAL, default 30s
 }
 
 // Load reads configuration from the environment.
 func Load() (Config, error) {
 	cfg := Config{
-		WorkerID:      os.Getenv("WORKER_ID"),
-		Port:          8080,
-		DataDir:       envOr("DATA_DIR", "/data"),
-		MaxChunkBytes: DefaultMaxChunkBytes,
-	}
-	if cfg.WorkerID == "" {
-		host, err := os.Hostname()
-		if err != nil || host == "" {
-			host = "worker"
-		}
-		cfg.WorkerID = host
+		Port:             8080,
+		DataDir:          envOr("DATA_DIR", "/data"),
+		MaxChunkBytes:    DefaultMaxChunkBytes,
+		DataRoot:         os.Getenv("DATA_ROOT"),
+		ControllerURL:    strings.TrimRight(envOr("CONTROLLER_URL", "http://controller:8080"), "/"),
+		AnnounceInterval: 30 * time.Second,
 	}
 	if v := os.Getenv("PORT"); v != "" {
 		p, err := strconv.Atoi(v)
@@ -46,6 +54,17 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid MAX_CHUNK_BYTES %q", v)
 		}
 		cfg.MaxChunkBytes = n
+	}
+	u, err := url.Parse(cfg.ControllerURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return Config{}, fmt.Errorf("invalid CONTROLLER_URL %q", cfg.ControllerURL)
+	}
+	if v := os.Getenv("ANNOUNCE_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("invalid ANNOUNCE_INTERVAL %q", v)
+		}
+		cfg.AnnounceInterval = d
 	}
 	return cfg, nil
 }

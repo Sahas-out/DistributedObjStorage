@@ -26,12 +26,11 @@ func TestGetChunkMapsWorkerErrors(t *testing.T) {
 		want   error
 	}{
 		{http.StatusNotFound, protocol.CodeChunkNotFound, ErrChunkNotFound},
-		{http.StatusInternalServerError, protocol.CodeChunkCorrupted, ErrChunkCorrupted},
 		{http.StatusInternalServerError, protocol.CodeStorageError, ErrUnavailable},
 	}
 	for _, tt := range tests {
 		srv := workerReturning(tt.status, tt.code)
-		_, err := NewClient(srv.URL, time.Second).GetChunk(context.Background(), "c1")
+		_, err := NewClient(time.Second).GetChunk(context.Background(), srv.URL, "c1")
 		srv.Close()
 		if !errors.Is(err, tt.want) {
 			t.Errorf("%d %s: error = %v, want %v", tt.status, tt.code, err, tt.want)
@@ -43,7 +42,7 @@ func TestUnreachableWorkerIsUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close()
-	_, err := NewClient(url, time.Second).PutChunk(context.Background(), "c1", "o1", 0, []byte("x"), "sum")
+	_, err := NewClient(time.Second).PutChunk(context.Background(), url, "c1", "o1", 0, []byte("x"), "sum")
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("error = %v, want ErrUnavailable", err)
 	}
@@ -71,15 +70,37 @@ func TestPutChunkSendsContractAndValidatesAck(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ack)
 	}))
 	defer srv.Close()
-	client := NewClient(srv.URL, time.Second)
+	client := NewClient(time.Second)
 
-	got, err := client.PutChunk(context.Background(), "c1", "o1", 3, []byte("hello"), "sum")
+	got, err := client.PutChunk(context.Background(), srv.URL, "c1", "o1", 3, []byte("hello"), "sum")
 	if err != nil || got != ack {
 		t.Fatalf("PutChunk = %+v, %v", got, err)
 	}
 	// An acknowledgement for some other chunk must not count as success.
 	wantSeq = 4
-	if _, err := client.PutChunk(context.Background(), "c1", "o1", 4, []byte("hello"), "sum"); !errors.Is(err, ErrUnavailable) {
+	if _, err := client.PutChunk(context.Background(), srv.URL, "c1", "o1", 4, []byte("hello"), "sum"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("mismatched ack: error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestListChunks(t *testing.T) {
+	want := []protocol.ChunkMetadata{{ChunkID: "a", ObjectID: "o", SequenceNo: 0}, {ChunkID: "b", ObjectID: "o", SequenceNo: 1}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/internals/chunks/metadata" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(want)
+	}))
+	defer srv.Close()
+
+	got, err := NewClient(time.Second).ListChunks(context.Background(), srv.URL)
+	if err != nil || len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("ListChunks = %+v, %v", got, err)
+	}
+
+	bad := workerReturning(http.StatusInternalServerError, protocol.CodeStorageError)
+	defer bad.Close()
+	if _, err := NewClient(time.Second).ListChunks(context.Background(), bad.URL); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("failing worker: error = %v, want ErrUnavailable", err)
 	}
 }

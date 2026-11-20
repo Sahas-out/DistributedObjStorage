@@ -1,5 +1,11 @@
 // Package metadata persists object metadata and each object's ordered chunk
 // list in SQLite.
+//
+// Only facts that don't change while the object exists are persisted: each
+// chunk's position, size and checksum. Where the replicas of a chunk live
+// (chunk IDs and workers) is runtime state that changes as workers come and
+// go or replicas are lost or corrupted, so it is kept in memory by the
+// cluster package and rebuilt from the workers' chunk reports.
 package metadata
 
 import (
@@ -25,35 +31,39 @@ CREATE TABLE IF NOT EXISTS objects (
 	chunk_count INTEGER NOT NULL CHECK (chunk_count >= 0),
 	created_at  INTEGER NOT NULL -- Unix time in nanoseconds, UTC
 );
+CREATE INDEX IF NOT EXISTS objects_by_created ON objects (created_at, object_id);
 CREATE TABLE IF NOT EXISTS object_chunks (
 	object_id   TEXT    NOT NULL REFERENCES objects (object_id) ON DELETE CASCADE,
 	sequence_no INTEGER NOT NULL CHECK (sequence_no >= 0),
-	chunk_id    TEXT    NOT NULL UNIQUE,
 	size        INTEGER NOT NULL CHECK (size > 0),
 	checksum    TEXT    NOT NULL,
 	PRIMARY KEY (object_id, sequence_no)
 );
 `
 
+// schemaVersion is stored in PRAGMA user_version. Phase 2 databases (no
+// version) stored a chunk_id per chunk and are rejected.
+const schemaVersion = 3
+
 // ErrNotFound is returned when an object has no metadata.
 var ErrNotFound = errors.New("object not found")
 
 // Chunk records where one piece of an object sits in the sequence and how to
-// verify it.
+// verify any replica of it.
 type Chunk struct {
 	SequenceNo int
-	ChunkID    string
 	Size       int64
 	Checksum   string // SHA-256 hex digest
 }
 
 // Object is the persisted description of a stored object.
 type Object struct {
-	ObjectID  string
-	Size      int64
-	Checksum  string // SHA-256 hex digest of the whole object
-	CreatedAt time.Time
-	Chunks    []Chunk // ordered by SequenceNo
+	ObjectID   string
+	Size       int64
+	Checksum   string // SHA-256 hex digest of the whole object
+	ChunkCount int
+	CreatedAt  time.Time
+	Chunks     []Chunk // ordered by SequenceNo; nil in List results
 }
 
 // Store is the SQLite-backed metadata repository.
@@ -75,11 +85,39 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open metadata db: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if err := migrate(ctx, db, abs); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create metadata schema: %w", err)
+		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// migrate creates the schema. A database from an older version is rejected
+// with a clear message instead of failing later on an insert.
+func migrate(ctx context.Context, db *sql.DB, dir string) error {
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version == 0 {
+		var tables int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'objects'`).Scan(&tables); err != nil {
+			return fmt.Errorf("inspect metadata db: %w", err)
+		}
+		if tables > 0 {
+			version = 2 // created by phase 2, which didn't set user_version
+		}
+	}
+	if version != 0 && version != schemaVersion {
+		return fmt.Errorf("metadata db in %s has schema version %d, want %d: remove the controller volume (docker compose down -v) to start fresh", dir, version, schemaVersion)
+	}
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("create metadata schema: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
 }
 
 // dsn builds the SQLite connection string. synchronous=FULL makes a commit
@@ -117,13 +155,13 @@ func (s *Store) Create(ctx context.Context, obj Object) error {
 		return fmt.Errorf("insert object: %w", err)
 	}
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO object_chunks (object_id, sequence_no, chunk_id, size, checksum) VALUES (?, ?, ?, ?, ?)`)
+		`INSERT INTO object_chunks (object_id, sequence_no, size, checksum) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare chunk insert: %w", err)
 	}
 	defer stmt.Close()
 	for _, c := range obj.Chunks {
-		if _, err := stmt.ExecContext(ctx, obj.ObjectID, c.SequenceNo, c.ChunkID, c.Size, c.Checksum); err != nil {
+		if _, err := stmt.ExecContext(ctx, obj.ObjectID, c.SequenceNo, c.Size, c.Checksum); err != nil {
 			return fmt.Errorf("insert chunk %d: %w", c.SequenceNo, err)
 		}
 	}
@@ -136,11 +174,10 @@ func (s *Store) Create(ctx context.Context, obj Object) error {
 // Get returns an object and its chunks in sequence order, or ErrNotFound.
 func (s *Store) Get(ctx context.Context, objectID string) (Object, error) {
 	obj := Object{ObjectID: objectID}
-	var chunkCount int
 	var created int64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT size, checksum, chunk_count, created_at FROM objects WHERE object_id = ?`, objectID).
-		Scan(&obj.Size, &obj.Checksum, &chunkCount, &created)
+		Scan(&obj.Size, &obj.Checksum, &obj.ChunkCount, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Object{}, ErrNotFound
 	}
@@ -150,16 +187,16 @@ func (s *Store) Get(ctx context.Context, objectID string) (Object, error) {
 	obj.CreatedAt = time.Unix(0, created).UTC()
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT sequence_no, chunk_id, size, checksum FROM object_chunks WHERE object_id = ? ORDER BY sequence_no`, objectID)
+		`SELECT sequence_no, size, checksum FROM object_chunks WHERE object_id = ? ORDER BY sequence_no`, objectID)
 	if err != nil {
 		return Object{}, fmt.Errorf("read chunks: %w", err)
 	}
 	defer rows.Close()
 
-	obj.Chunks = make([]Chunk, 0, chunkCount)
+	obj.Chunks = make([]Chunk, 0, obj.ChunkCount)
 	for rows.Next() {
 		var c Chunk
-		if err := rows.Scan(&c.SequenceNo, &c.ChunkID, &c.Size, &c.Checksum); err != nil {
+		if err := rows.Scan(&c.SequenceNo, &c.Size, &c.Checksum); err != nil {
 			return Object{}, fmt.Errorf("read chunk: %w", err)
 		}
 		if c.SequenceNo != len(obj.Chunks) {
@@ -170,8 +207,63 @@ func (s *Store) Get(ctx context.Context, objectID string) (Object, error) {
 	if err := rows.Err(); err != nil {
 		return Object{}, fmt.Errorf("read chunks: %w", err)
 	}
-	if len(obj.Chunks) != chunkCount {
-		return Object{}, fmt.Errorf("object %s: expected %d chunks, found %d", objectID, chunkCount, len(obj.Chunks))
+	if len(obj.Chunks) != obj.ChunkCount {
+		return Object{}, fmt.Errorf("object %s: expected %d chunks, found %d", objectID, obj.ChunkCount, len(obj.Chunks))
 	}
 	return obj, nil
+}
+
+// List returns every object, oldest first, without chunk lists.
+func (s *Store) List(ctx context.Context) ([]Object, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT object_id, size, checksum, chunk_count, created_at FROM objects ORDER BY created_at, object_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list objects: %w", err)
+	}
+	defer rows.Close()
+	out := []Object{}
+	for rows.Next() {
+		var o Object
+		var created int64
+		if err := rows.Scan(&o.ObjectID, &o.Size, &o.Checksum, &o.ChunkCount, &created); err != nil {
+			return nil, fmt.Errorf("list objects: %w", err)
+		}
+		o.CreatedAt = time.Unix(0, created).UTC()
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list objects: %w", err)
+	}
+	return out, nil
+}
+
+// Delete removes an object and its chunk records, or returns ErrNotFound.
+func (s *Store) Delete(ctx context.Context, objectID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM objects WHERE object_id = ?`, objectID)
+	if err != nil {
+		return fmt.Errorf("delete object: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete object: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// HasChunk reports whether objectID exists and has a chunk at position seq.
+// It is used to classify chunks reported by workers.
+func (s *Store) HasChunk(ctx context.Context, objectID string, seq int) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM object_chunks WHERE object_id = ? AND sequence_no = ?`, objectID, seq).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up chunk: %w", err)
+	}
+	return true, nil
 }

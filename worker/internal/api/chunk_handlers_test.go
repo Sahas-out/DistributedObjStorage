@@ -77,7 +77,13 @@ func (m *mockStorage) List(ctx context.Context) ([]storage.ChunkMetadata, error)
 const testMaxChunk = 1 << 20
 
 func newTestHandler(store storage.Storage) http.Handler {
-	return NewServer(store, "worker-test", testMaxChunk, nil).Handler()
+	return newTestServer(store, nil).Handler()
+}
+
+// newTestServer builds a Server whose health ping returns pingErr.
+func newTestServer(store storage.Storage, pingErr error) *Server {
+	ping := func(context.Context) error { return pingErr }
+	return NewServer(store, ping, func() string { return "worker-test" }, testMaxChunk, nil)
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
@@ -117,7 +123,6 @@ func echoPut(_ context.Context, meta storage.ChunkMetadata, src io.Reader) (stor
 		return storage.ChunkMetadata{}, err
 	}
 	meta.Size = int64(len(b))
-	meta.Checksum = sum(b)
 	return meta, nil
 }
 
@@ -379,7 +384,7 @@ func TestPutChunk(t *testing.T) {
 	t.Run("storage returning inconsistent info returns 500", func(t *testing.T) {
 		m := &mockStorage{putFn: func(_ context.Context, meta storage.ChunkMetadata, src io.Reader) (storage.ChunkMetadata, error) {
 			_, _ = io.ReadAll(src)
-			meta.Size, meta.Checksum = 1, sum([]byte("x"))
+			meta.Size = 1
 			return meta, nil
 		}}
 		rec := do(t, newTestHandler(m), http.MethodPut, "/internals/chunks/c1", body, nil)
@@ -406,7 +411,7 @@ func TestGetChunk(t *testing.T) {
 	data := []byte("some chunk bytes \x00\x01\x02")
 	good := storage.ChunkMetadata{
 		ChunkID: "c1", ObjectID: "obj1", SequenceNo: 2,
-		Size: int64(len(data)), Checksum: sum(data),
+		Size: int64(len(data)),
 	}
 
 	t.Run("happy path returns Chunk JSON and headers", func(t *testing.T) {
@@ -432,8 +437,8 @@ func TestGetChunk(t *testing.T) {
 		if got := h.Get("Content-Length"); got != fmt.Sprint(rec.Body.Len()) {
 			t.Errorf("Content-Length = %q, body is %d bytes", got, rec.Body.Len())
 		}
-		if got := h.Get(protocol.HeaderChunkChecksum); got != good.Checksum {
-			t.Errorf("%s = %q", protocol.HeaderChunkChecksum, got)
+		if got := h.Get(protocol.HeaderChunkChecksum); got != "" {
+			t.Errorf("%s = %q, want no checksum header on GET", protocol.HeaderChunkChecksum, got)
 		}
 		if got := h.Get(protocol.HeaderChunkSize); got != fmt.Sprint(len(data)) {
 			t.Errorf("%s = %q", protocol.HeaderChunkSize, got)
@@ -452,8 +457,8 @@ func TestGetChunk(t *testing.T) {
 		if rec.Body.Len() != 0 {
 			t.Fatalf("HEAD returned a body")
 		}
-		if rec.Header().Get(protocol.HeaderChunkChecksum) != good.Checksum {
-			t.Fatalf("missing checksum header")
+		if rec.Header().Get(protocol.HeaderChunkSize) != fmt.Sprint(len(data)) {
+			t.Fatalf("missing size header")
 		}
 	})
 
@@ -465,37 +470,23 @@ func TestGetChunk(t *testing.T) {
 		expectError(t, rec, http.StatusNotFound, protocol.CodeChunkNotFound)
 	})
 
-	t.Run("corrupted content returns 500 chunk_corrupted", func(t *testing.T) {
+	t.Run("data is returned as stored, without integrity checks", func(t *testing.T) {
+		// The worker keeps no checksum, so damaged bytes are passed through
+		// and the controller detects the corruption.
 		corrupted := append([]byte(nil), data...)
 		corrupted[0] ^= 0xFF
 		m := &mockStorage{openFn: openReturning(corrupted, good)}
 		rec := do(t, newTestHandler(m), http.MethodGet, "/internals/chunks/c1", nil, nil)
-		expectError(t, rec, http.StatusInternalServerError, protocol.CodeChunkCorrupted)
-		if strings.Contains(rec.Body.String(), `"data"`) {
-			t.Fatalf("corrupted data was returned: %q", rec.Body.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
 		}
-	})
-
-	t.Run("truncated content returns 500 chunk_corrupted", func(t *testing.T) {
-		m := &mockStorage{openFn: openReturning(data[:5], good)}
-		rec := do(t, newTestHandler(m), http.MethodGet, "/internals/chunks/c1", nil, nil)
-		expectError(t, rec, http.StatusInternalServerError, protocol.CodeChunkCorrupted)
-	})
-
-	t.Run("empty recorded checksum returns 500 chunk_corrupted", func(t *testing.T) {
-		noSum := good
-		noSum.Checksum = ""
-		m := &mockStorage{openFn: openReturning(data, noSum)}
-		rec := do(t, newTestHandler(m), http.MethodGet, "/internals/chunks/c1", nil, nil)
-		expectError(t, rec, http.StatusInternalServerError, protocol.CodeChunkCorrupted)
-	})
-
-	t.Run("missing checksum metadata returns 500 storage_error", func(t *testing.T) {
-		m := &mockStorage{openFn: func(context.Context, string) (io.ReadCloser, storage.ChunkMetadata, error) {
-			return nil, storage.ChunkMetadata{}, storage.ErrMissingChecksum
-		}}
-		rec := do(t, newTestHandler(m), http.MethodGet, "/internals/chunks/c1", nil, nil)
-		expectError(t, rec, http.StatusInternalServerError, protocol.CodeStorageError)
+		var got protocol.Chunk
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got.Data, corrupted) {
+			t.Fatalf("data was altered")
+		}
 	})
 
 	t.Run("read failure returns 500", func(t *testing.T) {
@@ -583,8 +574,8 @@ func TestListChunkMetadata(t *testing.T) {
 
 	t.Run("returns metadata DTOs only", func(t *testing.T) {
 		metas := []storage.ChunkMetadata{
-			{ChunkID: "a", ObjectID: "o1", SequenceNo: 0, Size: 1, Checksum: sum([]byte("a")), FilePath: "/data/a"},
-			{ChunkID: "b", ObjectID: "o1", SequenceNo: 1, Size: 2, Checksum: sum([]byte("bb")), FilePath: "/data/b"},
+			{ChunkID: "a", ObjectID: "o1", SequenceNo: 0, Size: 1, FilePath: "/data/a"},
+			{ChunkID: "b", ObjectID: "o1", SequenceNo: 1, Size: 2, FilePath: "/data/b"},
 		}
 		m := &mockStorage{listFn: func(context.Context) ([]storage.ChunkMetadata, error) { return metas, nil }}
 		rec := do(t, newTestHandler(m), http.MethodGet, "/internals/chunks/metadata", nil, nil)
@@ -631,6 +622,12 @@ func TestHealth(t *testing.T) {
 	if body["status"] != "ok" || body["worker_id"] != "worker-test" {
 		t.Fatalf("unexpected body %v", body)
 	}
+
+	t.Run("database unavailable returns 503", func(t *testing.T) {
+		h := newTestServer(&mockStorage{}, errors.New("db closed")).Handler()
+		rec := do(t, h, http.MethodGet, "/healthz", nil, nil)
+		expectError(t, rec, http.StatusServiceUnavailable, protocol.CodeStorageError)
+	})
 }
 
 func TestRouting(t *testing.T) {
@@ -698,9 +695,6 @@ func TestRoundTripWithFilesystemStore(t *testing.T) {
 	if chunk.ObjectID != "obj" || chunk.SequenceNo != 0 || !bytes.Equal(chunk.Data, data) {
 		t.Fatalf("GET returned object_id=%q sequence_no=%d, data equal = %v",
 			chunk.ObjectID, chunk.SequenceNo, bytes.Equal(chunk.Data, data))
-	}
-	if resp.Header.Get(protocol.HeaderChunkChecksum) != sum(data) {
-		t.Fatalf("checksum header mismatch")
 	}
 
 	resp, err = client.Get(srv.URL + "/internals/chunks/metadata")

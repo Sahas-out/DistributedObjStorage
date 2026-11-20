@@ -115,22 +115,22 @@ func (s *Server) handlePutChunk(w http.ResponseWriter, r *http.Request) {
 		s.storageError(w, r, id, err)
 		return
 	}
-	if !digestsEqual(meta.Checksum, sum) || meta.Size != int64(len(req.Data)) {
-		s.log.Error("storage recorded different chunk info than received",
-			"chunk_id", id, "want_checksum", sum, "got_checksum", meta.Checksum,
-			"want_size", len(req.Data), "got_size", meta.Size)
+	if meta.Size != int64(len(req.Data)) {
+		s.log.Error("storage recorded a different size than received",
+			"chunk_id", id, "want_size", len(req.Data), "got_size", meta.Size)
 		writeError(w, http.StatusInternalServerError, protocol.CodeStorageError, "storage recorded inconsistent chunk info")
 		return
 	}
 
-	w.Header().Set(protocol.HeaderChunkChecksum, meta.Checksum)
+	// The digest of what was received, so the caller can confirm the data
+	// arrived intact. It is not stored.
+	w.Header().Set(protocol.HeaderChunkChecksum, sum)
 	writeJSON(w, http.StatusCreated, toWireMetadata(meta))
 }
 
-// handleGetChunk returns the chunk as a protocol.Chunk JSON body after
-// verifying the data against the recorded checksum. Corrupted chunks are
-// reported as 500 chunk_corrupted so the controller can fall back to another
-// replica.
+// handleGetChunk returns the chunk as a protocol.Chunk JSON body. The worker
+// keeps no checksum, so the data is returned as it is on disk; the controller
+// verifies it and falls back to another replica if it is corrupted.
 func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.chunkID(w, r)
 	if !ok {
@@ -150,16 +150,6 @@ func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actual := sha256Hex(data)
-	if meta.Checksum == "" || !digestsEqual(actual, meta.Checksum) || int64(len(data)) != meta.Size {
-		s.log.Warn("chunk failed integrity check",
-			"chunk_id", id, "recorded_checksum", meta.Checksum, "actual_checksum", actual,
-			"recorded_size", meta.Size, "actual_size", len(data))
-		writeError(w, http.StatusInternalServerError, protocol.CodeChunkCorrupted,
-			"chunk "+id+" failed integrity check")
-		return
-	}
-
 	payload, err := json.Marshal(protocol.Chunk{
 		ObjectID:   meta.ObjectID,
 		SequenceNo: meta.SequenceNo,
@@ -174,8 +164,7 @@ func (s *Server) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
 	h.Set("Content-Length", strconv.Itoa(len(payload)))
-	h.Set(protocol.HeaderChunkChecksum, meta.Checksum)
-	h.Set(protocol.HeaderChunkSize, strconv.FormatInt(meta.Size, 10))
+	h.Set(protocol.HeaderChunkSize, strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(payload)
@@ -210,8 +199,15 @@ func (s *Server) handleListChunks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "worker_id": s.workerID})
+// handleHealth reports 200 when the metadata database answers a ping, 503
+// otherwise. worker_id is empty until the worker has registered.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := s.ping(r.Context()); err != nil {
+		s.log.Error("health check failed", "error", err)
+		writeError(w, http.StatusServiceUnavailable, protocol.CodeStorageError, "metadata store unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "worker_id": s.workerID()})
 }
 
 func toWireMetadata(m storage.ChunkMetadata) protocol.ChunkMetadata {

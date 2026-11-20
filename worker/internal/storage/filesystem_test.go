@@ -3,13 +3,12 @@ package storage
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -27,9 +26,10 @@ func newStore(t *testing.T, dir string) *Filesystem {
 	return f
 }
 
-func hexSum(b []byte) string {
-	s := sha256.Sum256(b)
-	return hex.EncodeToString(s[:])
+// completeVersion reports whether got is exactly one "<id>-writer<w>-round<r>"
+// payload, as written by the concurrency test.
+func completeVersion(got []byte, id string) bool {
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(id) + `-writer\d+-round\d+$`).Match(got)
 }
 
 func put(t *testing.T, f *Filesystem, id, obj string, seq int, data []byte) ChunkMetadata {
@@ -80,8 +80,8 @@ func TestPutOpenRoundTrip(t *testing.T) {
 	if meta.ChunkID != "obj1_2" || meta.ObjectID != "obj1" || meta.SequenceNo != 2 {
 		t.Fatalf("identity fields = %+v", meta)
 	}
-	if meta.Size != int64(len(data)) || meta.Checksum != hexSum(data) {
-		t.Fatalf("size/checksum = %d/%s", meta.Size, meta.Checksum)
+	if meta.Size != int64(len(data)) {
+		t.Fatalf("size = %d, want %d", meta.Size, len(data))
 	}
 	if meta.CreatedAt.Before(before) || meta.CreatedAt.Location() != time.UTC {
 		t.Fatalf("CreatedAt = %v", meta.CreatedAt)
@@ -112,7 +112,7 @@ func TestPutOpenRoundTrip(t *testing.T) {
 func TestPutEmptyChunk(t *testing.T) {
 	f := newStore(t, t.TempDir())
 	meta := put(t, f, "empty", "o", 0, nil)
-	if meta.Size != 0 || meta.Checksum != hexSum(nil) {
+	if meta.Size != 0 {
 		t.Fatalf("meta = %+v", meta)
 	}
 	if got, _ := read(t, f, "empty"); len(got) != 0 {
@@ -303,7 +303,7 @@ func TestList(t *testing.T) {
 	var ids []string
 	for _, m := range list {
 		ids = append(ids, m.ChunkID)
-		if m.ObjectID != "obj-"+m.ChunkID || m.Checksum != hexSum([]byte(m.ChunkID)) || m.FilePath == "" {
+		if m.ObjectID != "obj-"+m.ChunkID || m.Size != int64(len(m.ChunkID)) || m.FilePath == "" {
 			t.Errorf("row %+v", m)
 		}
 	}
@@ -406,8 +406,8 @@ func TestConcurrentAccess(t *testing.T) {
 						errs <- fmt.Errorf("Put %s: %w", id, err)
 						return
 					}
-					// Every read must see a complete version whose bytes match
-					// the checksum recorded alongside them.
+					// Every read must see one complete version: bytes written by
+					// a single Put, with the size recorded alongside them.
 					rc, meta, err := f.Open(ctx, id)
 					if err != nil {
 						errs <- fmt.Errorf("Open %s: %w", id, err)
@@ -415,7 +415,7 @@ func TestConcurrentAccess(t *testing.T) {
 					}
 					got, err := io.ReadAll(rc)
 					rc.Close()
-					if err != nil || hexSum(got) != meta.Checksum || int64(len(got)) != meta.Size {
+					if err != nil || !completeVersion(got, id) || int64(len(got)) != meta.Size {
 						errs <- fmt.Errorf("Open %s: torn read (err=%v)", id, err)
 						return
 					}
@@ -449,5 +449,50 @@ func TestConcurrentAccess(t *testing.T) {
 	sort.Strings(got)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk files %v don't match metadata %v", got, want)
+	}
+}
+
+func TestPing(t *testing.T) {
+	f := newStore(t, t.TempDir())
+	if err := f.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	f.Close()
+	if err := f.Ping(context.Background()); err == nil {
+		t.Fatal("Ping after Close succeeded")
+	}
+}
+
+func TestWorkerIDPersistsAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := newStore(t, dir)
+	if id, err := f.LoadWorkerID(ctx); err != nil || id != "" {
+		t.Fatalf("LoadWorkerID on fresh store = %q, %v; want empty", id, err)
+	}
+	if err := f.SaveWorkerID(ctx, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SaveWorkerID(ctx, "second"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	g := newStore(t, dir)
+	if id, err := g.LoadWorkerID(ctx); err != nil || id != "second" {
+		t.Fatalf("LoadWorkerID after reopen = %q, %v; want second", id, err)
+	}
+}
+
+func TestRejectsOldSchema(t *testing.T) {
+	dir := t.TempDir()
+	f := newStore(t, dir)
+	// Simulate a phase 2 database: a chunks table but no schema version.
+	if _, err := f.db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, err := NewFilesystem(context.Background(), dir, nil); err == nil || !strings.Contains(err.Error(), "older worker version") {
+		t.Fatalf("NewFilesystem on old schema: err = %v, want older-version error", err)
 	}
 }

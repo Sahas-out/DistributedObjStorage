@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/metadata"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/object"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/workers"
@@ -29,13 +30,46 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/api/v1/objects/"+obj.ObjectID)
 	w.Header().Set("ETag", etag(obj))
-	writeJSON(w, http.StatusCreated, protocol.ObjectInfo{
+	writeJSON(w, http.StatusCreated, objectInfo(obj))
+}
+
+// handleList responds with a JSON array of protocol.ObjectInfo for every
+// stored object, oldest first.
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	objs, err := s.objects.List(r.Context())
+	if err != nil {
+		s.writeObjectError(w, r, "", err)
+		return
+	}
+	out := make([]protocol.ObjectInfo, 0, len(objs))
+	for _, o := range objs {
+		out = append(out, objectInfo(o))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleDelete removes an object and its stored chunks and responds 204.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("object_id")
+	if !object.ValidObjectID(id) {
+		writeError(w, http.StatusBadRequest, protocol.CodeInvalidObjectID, "object id must be 32 lowercase hex characters")
+		return
+	}
+	if err := s.objects.Delete(r.Context(), id); err != nil {
+		s.writeObjectError(w, r, id, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func objectInfo(obj metadata.Object) protocol.ObjectInfo {
+	return protocol.ObjectInfo{
 		ObjectID:   obj.ObjectID,
 		Size:       obj.Size,
 		Checksum:   obj.Checksum,
-		ChunkCount: len(obj.Chunks),
+		ChunkCount: obj.ChunkCount,
 		CreatedAt:  obj.CreatedAt,
-	})
+	}
 }
 
 // discardBody reads what is left of a failed upload. Replying while the client
@@ -110,6 +144,12 @@ func (s *Server) writeObjectError(w http.ResponseWriter, r *http.Request, id str
 	case errors.Is(err, object.ErrIncompleteUpload), errors.Is(err, context.Canceled):
 		s.log.Warn("request abandoned", "method", r.Method, "object_id", id, "error", err)
 		writeError(w, http.StatusBadRequest, protocol.CodeUploadIncomplete, "the request ended before all data was transferred")
+	case errors.Is(err, cluster.ErrInsufficientWorkers):
+		s.log.Error("not enough workers", "method", r.Method, "error", err)
+		writeError(w, http.StatusServiceUnavailable, protocol.CodeInsufficientWorkers, "not enough storage workers are ready to store the required copies; try again later")
+	case errors.Is(err, object.ErrObjectUnavailable):
+		s.log.Error("object unavailable", "method", r.Method, "object_id", id, "error", err)
+		writeError(w, http.StatusServiceUnavailable, protocol.CodeObjectUnavailable, "no copy of part of object "+id+" can be read right now; try again later")
 	case errors.Is(err, workers.ErrUnavailable):
 		s.log.Error("worker unavailable", "method", r.Method, "object_id", id, "error", err)
 		writeError(w, http.StatusServiceUnavailable, protocol.CodeWorkerUnavailable, "storage worker is unavailable; try again later")

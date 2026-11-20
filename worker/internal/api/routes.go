@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -13,18 +14,21 @@ import (
 // Server serves the worker chunk API on top of a Storage.
 type Server struct {
 	store    storage.Storage
-	workerID string
+	ping     func(context.Context) error
+	workerID func() string
 	maxChunk int64
 	log      *slog.Logger
 }
 
-// NewServer builds a Server. maxChunk is the largest accepted chunk body in
-// bytes. A nil logger discards logs.
-func NewServer(store storage.Storage, workerID string, maxChunk int64, log *slog.Logger) *Server {
+// NewServer builds a Server. ping reports whether the metadata database is
+// usable and backs the health check. workerID returns the ID the controller
+// assigned, or "" before the first registration. maxChunk is the largest
+// accepted chunk body in bytes. A nil logger discards logs.
+func NewServer(store storage.Storage, ping func(context.Context) error, workerID func() string, maxChunk int64, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(discard{}, nil))
 	}
-	return &Server{store: store, workerID: workerID, maxChunk: maxChunk, log: log}
+	return &Server{store: store, ping: ping, workerID: workerID, maxChunk: maxChunk, log: log}
 }
 
 // Handler returns the HTTP handler with all routes and middleware.

@@ -1,8 +1,8 @@
 {
   "info": {
-    "name": "DOS Controller API (with worker)",
+    "name": "DOS Controller API (multi-worker)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Client-facing controller API. Saved example responses were captured from a real controller + worker1 docker compose stack. Run 'Upload text object' first so {{objectId}} is set."
+    "description": "Client-facing and internal controller API (phase 3). Start the stack with `docker compose up -d --build` (1 controller + 4 workers). Run 'Upload text object' first: its test saves {{objectId}}. 'List workers' saves the first worker's ID into {{workerId}}. Saved example responses for unchanged requests were captured from the phase 2 stack."
   },
   "item": [
     {
@@ -67,7 +67,7 @@
             "objects"
           ]
         },
-        "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores them on the worker. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
+        "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores each chunk on 2 different workers. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
         "body": {
           "mode": "raw",
           "raw": "Hello, distributed world!",
@@ -95,7 +95,7 @@
                 "objects"
               ]
             },
-            "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores them on the worker. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
+            "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores each chunk on 2 different workers. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
             "body": {
               "mode": "raw",
               "raw": "Hello, distributed world!",
@@ -163,7 +163,7 @@
             "objects"
           ]
         },
-        "description": "In the Body tab, choose 'binary' and select a file. Example: a 2.5 MiB file is stored as 3 chunks.",
+        "description": "In the Body tab, choose 'binary' and select a file. Example: a 2.5 MiB file is stored as 3 chunks. Then run 'Object replicas' to see the 2 copies of every chunk.",
         "body": {
           "mode": "file",
           "file": {
@@ -314,7 +314,7 @@
             "{{objectId}}"
           ]
         },
-        "description": "Returns the headers without contacting the worker."
+        "description": "Returns the headers without contacting any worker."
       },
       "response": [
         {
@@ -358,8 +358,231 @@
       ]
     },
     {
-      "name": "Inspect worker directly",
-      "description": "Shows the chunks the controller stored on worker1 (host port 8081). Chunk IDs are <object_id>_<sequence_no>.",
+      "name": "List objects",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects"
+          ]
+        },
+        "description": "Every stored object (ObjectInfo), oldest first. [] when empty."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('is an array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Delete object",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects",
+            "{{objectId}}"
+          ]
+        },
+        "description": "Deletes {{objectId}} and its copies on the workers. Running it again returns 404."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cluster (internal API)",
+      "item": [
+        {
+          "name": "List workers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/workers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "workers"
+              ]
+            },
+            "description": "Registered workers with status (AVAILABLE until the chunk list is loaded, then READY), chunk_count and last_seen. Saves the first worker_id into {{workerId}}."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const ws = pm.response.json();",
+                  "if (ws.length > 0) { pm.collectionVariables.set('workerId', ws[0].worker_id); }",
+                  "pm.test('every worker READY', () => ws.forEach(w => pm.expect(w.status).to.eql('READY')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Object replicas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/objects/{{objectId}}/replicas",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "objects",
+                "{{objectId}}",
+                "replicas"
+              ]
+            },
+            "description": "Where each copy of every chunk of {{objectId}} lives: chunk_id, sequence_no, worker_id, worker_addr, status."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('2 copies per chunk on different workers', () => {",
+                  "  const by = {};",
+                  "  b.replicas.forEach(r => (by[r.sequence_no] = by[r.sequence_no] || []).push(r.worker_id));",
+                  "  pm.expect(Object.keys(by).length).to.eql(b.chunk_count);",
+                  "  Object.values(by).forEach(ws => { pm.expect(ws.length).to.eql(2); pm.expect(ws[0]).to.not.eql(ws[1]); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register a worker (as a worker would)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/workers/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "workers",
+                "register"
+              ]
+            },
+            "description": "Workers call this themselves at startup and every 30 s. Sent from Postman, the controller records your machine as a worker at <your IP>:<port> and will fail to load its chunk list, so it stays AVAILABLE. Mainly useful to see the request format.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"worker_id\": \"\",\n  \"port\": 8080\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deregister worker",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/workers/{{workerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "workers",
+                "{{workerId}}"
+              ]
+            },
+            "description": "Voluntary resignation of {{workerId}} (run List workers first). The controller forgets the worker and its copies; the worker gets 410 on its next announcement and stops announcing. Its copies are no longer used, so objects may be left with one copy."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Inspect a worker directly",
+      "description": "Workers publish port 8080 on host ports 8081-8099. Find one with `docker compose port --index 1 worker 8080` and set the folder variable workerUrl to it.",
+      "variable": [
+        {
+          "key": "workerUrl",
+          "value": "http://localhost:8081"
+        }
+      ],
       "item": [
         {
           "name": "Worker: list chunk metadata",
@@ -379,95 +602,7 @@
             },
             "description": ""
           },
-          "response": [
-            {
-              "name": "200 OK",
-              "originalRequest": {
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{workerUrl}}/internals/chunks/metadata",
-                  "host": [
-                    "{{workerUrl}}"
-                  ],
-                  "path": [
-                    "internals",
-                    "chunks",
-                    "metadata"
-                  ]
-                },
-                "description": ""
-              },
-              "status": "OK",
-              "code": 200,
-              "_postman_previewlanguage": "json",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                }
-              ],
-              "body": "[\n  {\n    \"chunk_id\": \"4537785f9fe84ec13ac9d350daf00de8_0\",\n    \"object_id\": \"4537785f9fe84ec13ac9d350daf00de8\",\n    \"sequence_no\": 0\n  },\n  {\n    \"chunk_id\": \"a588fbde11d83f39d7b92bc75a4bb90f_0\",\n    \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n    \"sequence_no\": 0\n  },\n  {\n    \"chunk_id\": \"a588fbde11d83f39d7b92bc75a4bb90f_1\",\n    \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n    \"sequence_no\": 1\n  },\n  {\n    \"chunk_id\": \"a588fbde11d83f39d7b92bc75a4bb90f_2\",\n    \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n    \"sequence_no\": 2\n  }\n]"
-            }
-          ]
-        },
-        {
-          "name": "Worker: get first chunk of last object",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{workerUrl}}/internals/chunks/{{objectId}}_0",
-              "host": [
-                "{{workerUrl}}"
-              ],
-              "path": [
-                "internals",
-                "chunks",
-                "{{objectId}}_0"
-              ]
-            },
-            "description": ""
-          },
-          "response": [
-            {
-              "name": "200 OK",
-              "originalRequest": {
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{workerUrl}}/internals/chunks/{{objectId}}_0",
-                  "host": [
-                    "{{workerUrl}}"
-                  ],
-                  "path": [
-                    "internals",
-                    "chunks",
-                    "{{objectId}}_0"
-                  ]
-                },
-                "description": ""
-              },
-              "status": "OK",
-              "code": 200,
-              "_postman_previewlanguage": "json",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                },
-                {
-                  "key": "X-Chunk-Checksum",
-                  "value": "cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b"
-                },
-                {
-                  "key": "X-Chunk-Size",
-                  "value": "25"
-                }
-              ],
-              "body": "{\n  \"object_id\": \"4537785f9fe84ec13ac9d350daf00de8\",\n  \"sequence_no\": 0,\n  \"data\": \"SGVsbG8sIGRpc3RyaWJ1dGVkIHdvcmxkIQ==\"\n}"
-            }
-          ]
+          "response": []
         },
         {
           "name": "Worker: health",
@@ -483,37 +618,9 @@
                 "healthz"
               ]
             },
-            "description": ""
+            "description": "Pings the worker's SQLite database; 503 if it fails. Shows the controller-assigned worker_id."
           },
-          "response": [
-            {
-              "name": "200 OK",
-              "originalRequest": {
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{workerUrl}}/healthz",
-                  "host": [
-                    "{{workerUrl}}"
-                  ],
-                  "path": [
-                    "healthz"
-                  ]
-                },
-                "description": ""
-              },
-              "status": "OK",
-              "code": 200,
-              "_postman_previewlanguage": "json",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                }
-              ],
-              "body": "{\n  \"status\": \"ok\",\n  \"worker_id\": \"worker1\"\n}"
-            }
-          ]
+          "response": []
         }
       ]
     },
@@ -640,7 +747,7 @@
                 "objects"
               ]
             },
-            "description": ""
+            "description": "POST is not supported on /api/v1/objects (use PUT to upload)."
           },
           "response": [
             {
@@ -725,7 +832,90 @@
           ]
         },
         {
-          "name": "Download while worker is stopped -> 503",
+          "name": "Delete unknown object -> 404",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/0123456789abcdef0123456789abcdef",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "0123456789abcdef0123456789abcdef"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 object_not_found', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('object_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Upload with fewer than 2 workers -> 503",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects"
+              ]
+            },
+            "description": "Nothing detects stopped workers yet, so stopping or scaling down doesn't remove them from the controller. To get below 2 READY workers, restart the controller with one worker running: docker compose up -d --scale worker=1 && docker compose restart controller (wait ~30 s for the worker to re-announce). Afterwards: docker compose up -d --scale worker=4.",
+            "body": {
+              "mode": "raw",
+              "raw": "not enough workers",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('503 insufficient_workers', () => {",
+                  "  pm.response.to.have.status(503);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('insufficient_workers');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Download with one worker stopped -> still 200",
           "request": {
             "method": "GET",
             "header": [],
@@ -741,100 +931,18 @@
                 "{{objectId}}"
               ]
             },
-            "description": "First run: docker stop worker1. Afterwards: docker start worker1."
+            "description": "First run: docker stop <project>-worker-2. The controller still lists it, so reads of copies on it fail (about 1 s connect timeout, once per download) and the other copy is used. Afterwards: docker start <project>-worker-2."
           },
-          "response": [
+          "response": [],
+          "event": [
             {
-              "name": "503 Service Unavailable",
-              "originalRequest": {
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "v1",
-                    "objects",
-                    "{{objectId}}"
-                  ]
-                },
-                "description": "First run: docker stop worker1. Afterwards: docker start worker1."
-              },
-              "status": "Service Unavailable",
-              "code": 503,
-              "_postman_previewlanguage": "json",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                }
-              ],
-              "body": "{\n  \"error\": {\n    \"code\": \"worker_unavailable\",\n    \"message\": \"storage worker is unavailable; try again later\"\n  }\n}"
-            }
-          ]
-        },
-        {
-          "name": "Upload while worker is stopped -> 503",
-          "request": {
-            "method": "PUT",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/objects",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "objects"
-              ]
-            },
-            "description": "First run: docker stop worker1.",
-            "body": {
-              "mode": "raw",
-              "raw": "x"
-            }
-          },
-          "response": [
-            {
-              "name": "503 Service Unavailable",
-              "originalRequest": {
-                "method": "PUT",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/api/v1/objects",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "api",
-                    "v1",
-                    "objects"
-                  ]
-                },
-                "description": "First run: docker stop worker1.",
-                "body": {
-                  "mode": "raw",
-                  "raw": "x"
-                }
-              },
-              "status": "Service Unavailable",
-              "code": 503,
-              "_postman_previewlanguage": "json",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                },
-                {
-                  "key": "Connection",
-                  "value": "close"
-                }
-              ],
-              "body": "{\n  \"error\": {\n    \"code\": \"worker_unavailable\",\n    \"message\": \"storage worker is unavailable; try again later\"\n  }\n}"
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK from the remaining copy', () => pm.response.to.have.status(200));"
+                ]
+              }
             }
           ]
         }
@@ -847,12 +955,12 @@
       "value": "http://localhost:8080"
     },
     {
-      "key": "workerUrl",
-      "value": "http://localhost:8081"
+      "key": "objectId",
+      "value": ""
     },
     {
-      "key": "objectId",
-      "value": "4537785f9fe84ec13ac9d350daf00de8"
+      "key": "workerId",
+      "value": ""
     }
   ]
 }

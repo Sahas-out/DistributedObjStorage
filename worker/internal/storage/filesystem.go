@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -34,11 +33,18 @@ CREATE TABLE IF NOT EXISTS chunks (
 	sequence_no INTEGER NOT NULL CHECK (sequence_no >= 0),
 	file_path   TEXT    NOT NULL UNIQUE,
 	size        INTEGER NOT NULL CHECK (size >= 0),
-	checksum    TEXT    NOT NULL,
 	created_at  INTEGER NOT NULL -- Unix time in nanoseconds, UTC
 );
 CREATE INDEX IF NOT EXISTS chunks_by_object ON chunks (object_id, sequence_no);
+CREATE TABLE IF NOT EXISTS worker_identity (
+	id        INTEGER PRIMARY KEY CHECK (id = 1),
+	worker_id TEXT    NOT NULL
+);
 `
+
+// schemaVersion is stored in PRAGMA user_version. Version 1 (phase 1-2)
+// stored a checksum per chunk; version 2 doesn't.
+const schemaVersion = 2
 
 // Filesystem is the worker's persistent Storage. Chunk data lives in files
 // under <dataDir>/chunks and the ChunkMetadata table lives in SQLite at
@@ -92,9 +98,9 @@ func NewFilesystem(ctx context.Context, dataDir string, log *slog.Logger) (*File
 		return nil, fmt.Errorf("open metadata db: %w", err)
 	}
 	f := &Filesystem{dataDir: abs, db: db, log: log}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if err := f.migrate(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create metadata schema: %w", err)
+		return nil, err
 	}
 	if err := f.reconcile(ctx); err != nil {
 		db.Close()
@@ -117,9 +123,67 @@ func dsn(dbPath string) string {
 	return u.String()
 }
 
+// migrate creates the schema. A database written by an older version is
+// rejected rather than silently mixed with the new layout.
+func (f *Filesystem) migrate(ctx context.Context) error {
+	var version int
+	if err := f.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version != 0 && version != schemaVersion {
+		return fmt.Errorf("metadata db in %s has schema version %d, want %d: remove the worker volume to start fresh", f.dataDir, version, schemaVersion)
+	}
+	if version == 0 {
+		var tables int
+		if err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'chunks'`).Scan(&tables); err != nil {
+			return fmt.Errorf("inspect metadata db: %w", err)
+		}
+		if tables > 0 {
+			return fmt.Errorf("metadata db in %s was written by an older worker version: remove the worker volume to start fresh", f.dataDir)
+		}
+	}
+	if _, err := f.db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("create metadata schema: %w", err)
+	}
+	if _, err := f.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	return nil
+}
+
 // Close closes the metadata database.
 func (f *Filesystem) Close() error {
 	return f.db.Close()
+}
+
+// Ping reports whether the metadata database is usable.
+func (f *Filesystem) Ping(ctx context.Context) error {
+	return f.db.PingContext(ctx)
+}
+
+// LoadWorkerID returns the worker ID the controller assigned on an earlier
+// registration, or "" if the worker has never registered.
+func (f *Filesystem) LoadWorkerID(ctx context.Context) (string, error) {
+	var id string
+	err := f.db.QueryRowContext(ctx, `SELECT worker_id FROM worker_identity WHERE id = 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load worker id: %w", err)
+	}
+	return id, nil
+}
+
+// SaveWorkerID durably records the worker ID assigned by the controller.
+func (f *Filesystem) SaveWorkerID(ctx context.Context, id string) error {
+	_, err := f.db.ExecContext(ctx, `
+		INSERT INTO worker_identity (id, worker_id) VALUES (1, ?)
+		ON CONFLICT (id) DO UPDATE SET worker_id = excluded.worker_id`, id)
+	if err != nil {
+		return fmt.Errorf("save worker id: %w", err)
+	}
+	return nil
 }
 
 // Put writes the chunk data durably, then registers its metadata row.
@@ -128,7 +192,7 @@ func (f *Filesystem) Put(ctx context.Context, meta ChunkMetadata, src io.Reader)
 		return ChunkMetadata{}, ErrInvalidChunkID
 	}
 
-	rel, size, sum, err := f.writeChunkFile(meta.ChunkID, src)
+	rel, size, err := f.writeChunkFile(meta.ChunkID, src)
 	if err != nil {
 		return ChunkMetadata{}, err
 	}
@@ -140,7 +204,6 @@ func (f *Filesystem) Put(ctx context.Context, meta ChunkMetadata, src io.Reader)
 
 	meta.FilePath = rel
 	meta.Size = size
-	meta.Checksum = sum
 	meta.CreatedAt = time.Now().UTC()
 
 	f.mu.Lock()
@@ -158,11 +221,11 @@ func (f *Filesystem) Put(ctx context.Context, meta ChunkMetadata, src io.Reader)
 
 // writeChunkFile streams src into a temporary file, fsyncs it and renames it
 // into chunks/ under a fresh name. It returns the path relative to the data
-// directory, the size and the SHA-256 hex digest.
-func (f *Filesystem) writeChunkFile(chunkID string, src io.Reader) (rel string, size int64, sum string, err error) {
+// directory and the size.
+func (f *Filesystem) writeChunkFile(chunkID string, src io.Reader) (rel string, size int64, err error) {
 	tmp, err := os.CreateTemp(filepath.Join(f.dataDir, tmpDir), chunkID+".*.part")
 	if err != nil {
-		return "", 0, "", fmt.Errorf("create temp file: %w", err)
+		return "", 0, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer func() {
@@ -172,32 +235,31 @@ func (f *Filesystem) writeChunkFile(chunkID string, src io.Reader) (rel string, 
 		}
 	}()
 
-	h := sha256.New()
-	size, err = io.Copy(io.MultiWriter(tmp, h), src)
+	size, err = io.Copy(tmp, src)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("write chunk data: %w", err)
+		return "", 0, fmt.Errorf("write chunk data: %w", err)
 	}
 	if err = tmp.Sync(); err != nil {
-		return "", 0, "", fmt.Errorf("fsync chunk data: %w", err)
+		return "", 0, fmt.Errorf("fsync chunk data: %w", err)
 	}
 	if err = tmp.Close(); err != nil {
-		return "", 0, "", fmt.Errorf("close chunk file: %w", err)
+		return "", 0, fmt.Errorf("close chunk file: %w", err)
 	}
 
 	suffix, err := randomHex(8)
 	if err != nil {
-		return "", 0, "", err
+		return "", 0, err
 	}
 	// Chunk IDs never contain '.', so "<id>.<suffix>" can't collide across IDs.
 	rel = path.Join(chunksDir, chunkID+"."+suffix)
 	if err = os.Rename(tmpName, f.abs(rel)); err != nil {
-		return "", 0, "", fmt.Errorf("move chunk into place: %w", err)
+		return "", 0, fmt.Errorf("move chunk into place: %w", err)
 	}
 	if err = syncDir(filepath.Join(f.dataDir, chunksDir)); err != nil {
 		f.removeFile(f.abs(rel))
-		return "", 0, "", fmt.Errorf("fsync chunks dir: %w", err)
+		return "", 0, fmt.Errorf("fsync chunks dir: %w", err)
 	}
-	return rel, size, hex.EncodeToString(h.Sum(nil)), nil
+	return rel, size, nil
 }
 
 // upsert inserts or replaces the row for meta.ChunkID and returns the
@@ -214,17 +276,16 @@ func (f *Filesystem) upsert(ctx context.Context, meta ChunkMetadata) (oldRel str
 		return "", err
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO chunks (chunk_id, object_id, sequence_no, file_path, size, checksum, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO chunks (chunk_id, object_id, sequence_no, file_path, size, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (chunk_id) DO UPDATE SET
 			object_id   = excluded.object_id,
 			sequence_no = excluded.sequence_no,
 			file_path   = excluded.file_path,
 			size        = excluded.size,
-			checksum    = excluded.checksum,
 			created_at  = excluded.created_at`,
 		meta.ChunkID, meta.ObjectID, meta.SequenceNo, meta.FilePath,
-		meta.Size, meta.Checksum, meta.CreatedAt.UnixNano())
+		meta.Size, meta.CreatedAt.UnixNano())
 	if err != nil {
 		return "", err
 	}
@@ -249,9 +310,6 @@ func (f *Filesystem) Open(ctx context.Context, chunkID string) (io.ReadCloser, C
 	}
 	if err != nil {
 		return nil, ChunkMetadata{}, fmt.Errorf("read chunk metadata: %w", err)
-	}
-	if meta.Checksum == "" {
-		return nil, ChunkMetadata{}, ErrMissingChecksum
 	}
 	file, err := os.Open(f.abs(meta.FilePath))
 	if err != nil {
@@ -306,14 +364,14 @@ func (f *Filesystem) List(ctx context.Context) ([]ChunkMetadata, error) {
 	return out, nil
 }
 
-const selectMetadata = `SELECT chunk_id, object_id, sequence_no, file_path, size, checksum, created_at FROM chunks`
+const selectMetadata = `SELECT chunk_id, object_id, sequence_no, file_path, size, created_at FROM chunks`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanMetadata(s scanner) (ChunkMetadata, error) {
 	var m ChunkMetadata
 	var created int64
-	if err := s.Scan(&m.ChunkID, &m.ObjectID, &m.SequenceNo, &m.FilePath, &m.Size, &m.Checksum, &created); err != nil {
+	if err := s.Scan(&m.ChunkID, &m.ObjectID, &m.SequenceNo, &m.FilePath, &m.Size, &created); err != nil {
 		return ChunkMetadata{}, err
 	}
 	m.CreatedAt = time.Unix(0, created).UTC()

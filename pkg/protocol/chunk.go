@@ -3,9 +3,11 @@ package protocol
 
 // HTTP headers used by the worker chunk API.
 const (
-	// HeaderChunkChecksum carries the SHA-256 hex digest of a chunk's data.
-	// The worker sets it on PUT and GET responses; on PUT the caller may send
-	// it so the worker rejects the upload if the data doesn't match.
+	// HeaderChunkChecksum carries the SHA-256 hex digest of a chunk's data on
+	// PUT only. The caller may send it so the worker rejects data damaged in
+	// transit, and the worker echoes the digest of what it received. Workers
+	// do not store checksums, so GET responses don't carry it: the controller
+	// verifies chunks against its own metadata.
 	HeaderChunkChecksum = "X-Chunk-Checksum"
 	// HeaderChunkSize carries the chunk data size in bytes on GET responses.
 	HeaderChunkSize = "X-Chunk-Size"
@@ -49,7 +51,6 @@ const (
 	CodeChunkNotFound    = "chunk_not_found"
 	CodeChunkTooLarge    = "chunk_too_large"
 	CodeChecksumMismatch = "checksum_mismatch"
-	CodeChunkCorrupted   = "chunk_corrupted"
 	CodeInvalidRequest   = "invalid_request"
 	CodeStorageError     = "storage_error"
 	CodeInternalError    = "internal_error"

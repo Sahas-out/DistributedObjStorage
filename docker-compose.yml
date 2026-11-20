@@ -1,3 +1,13 @@
+# One controller and a scalable pool of identical workers.
+#
+#   docker compose up -d --build               # 4 workers (the default below)
+#   docker compose up -d --scale worker=6      # add workers
+#   docker compose up -d --scale worker=3      # remove the highest-numbered ones
+#
+# Workers aren't configured in the controller. Each worker registers itself
+# at CONTROLLER_URL; the controller records the worker's container IP and
+# talks to each container directly. Docker's service-name load balancing is
+# never involved.
 services:
   controller:
     build:
@@ -8,33 +18,39 @@ services:
     environment:
       PORT: "8080"
       DATA_DIR: /data
-      # Compose's network resolves the service name "worker1" to its container.
-      WORKER_URL: http://worker1:8080
+      REPLICATION_FACTOR: "2"
     ports:
       - "8080:8080"
     volumes:
       - controller-data:/data
-    depends_on:
-      worker1:
-        condition: service_healthy
     restart: unless-stopped
 
-  worker1:
+  worker:
     build:
       context: .
       dockerfile: worker/Dockerfile
     image: dos-worker:latest
-    container_name: worker1
+    # No container_name: replicas are named <project>-worker-<n>.
+    scale: 4
     environment:
-      WORKER_ID: worker1
       PORT: "8080"
-      DATA_DIR: /data
+      CONTROLLER_URL: http://controller:8080
+      ANNOUNCE_INTERVAL: 30s
+      # All workers share one volume. Each claims its own slot-<n> directory
+      # under DATA_ROOT and keeps its chunks and worker ID there, so data
+      # survives restarts, `down`/`up` and re-scaling.
+      DATA_ROOT: /data
+    # Host ports for direct debugging (Postman worker collection); see the
+    # mapping with `docker compose port --index <n> worker 8080`.
     ports:
-      - "8081:8080"
+      - "8081-8099:8080"
     volumes:
-      - worker1-data:/data
+      - worker-data:/data
+    depends_on:
+      controller:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   controller-data:
-  worker1-data:
+  worker-data:

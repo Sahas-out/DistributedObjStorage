@@ -2,7 +2,7 @@
   "info": {
     "name": "DOS Worker API",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Worker chunk API. Responses saved as examples were captured from a real dos-worker container."
+    "description": "Worker chunk API (phase 3). Workers publish port 8080 on host ports 8081-8099; find one with `docker compose port --index 1 worker 8080` and set baseUrl. Workers store no checksums: GET returns the bytes as stored, without X-Chunk-Checksum. Chunks PUT here belong to no object, so the controller marks them ORPHAN."
   },
   "item": [
     {
@@ -19,7 +19,7 @@
             "healthz"
           ]
         },
-        "description": "Used by the Docker HEALTHCHECK."
+        "description": "Used by the Docker HEALTHCHECK. Pings the SQLite database (503 if it fails) and reports the controller-assigned worker_id."
       },
       "response": [
         {
@@ -47,7 +47,7 @@
               "value": "application/json"
             }
           ],
-          "body": "{\n  \"status\": \"ok\",\n  \"worker_id\": \"worker1\"\n}"
+          "body": "{\n  \"status\": \"ok\",\n  \"worker_id\": \"w-3f9c2a7d1e5b8c40\"\n}"
         }
       ]
     },
@@ -76,7 +76,7 @@
             "chunk-001"
           ]
         },
-        "description": "data is base64 of 'Hello, world!'. X-Chunk-Checksum (optional) is SHA-256 hex of the RAW bytes, not the base64.",
+        "description": "data is base64 of 'Hello, world!'. X-Chunk-Checksum (optional) is SHA-256 hex of the RAW bytes, not the base64. The checksum is only checked in transit; it is not stored.",
         "body": {
           "mode": "raw",
           "raw": "{\n  \"object_id\": \"obj-42\",\n  \"sequence_no\": 0,\n  \"data\": \"SGVsbG8sIHdvcmxkIQ==\"\n}",
@@ -239,7 +239,7 @@
             "chunk-001"
           ]
         },
-        "description": ""
+        "description": "Returns the data as stored. The worker keeps no checksum; the controller verifies chunks."
       },
       "response": [
         {
@@ -267,10 +267,6 @@
             {
               "key": "Content-Type",
               "value": "application/json"
-            },
-            {
-              "key": "X-Chunk-Checksum",
-              "value": "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3"
             },
             {
               "key": "X-Chunk-Size",
