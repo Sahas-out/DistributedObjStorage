@@ -7,6 +7,10 @@
 // registers again and gets a new ID. The periodic call is the worker's
 // heartbeat, which the controller will use to detect failed workers.
 //
+// The controller answers with the interval it expects announcements at, and
+// the announcer adopts it: the controller declares a worker dead after a few
+// missed announcements, so the two must agree.
+//
 // The register call carries no chunk list: once a worker is registered, the
 // controller pulls the list from GET /internals/chunks/metadata.
 package registration
@@ -52,6 +56,7 @@ type Announcer struct {
 
 	mu       sync.RWMutex
 	workerID string
+	interval time.Duration // current announce interval; starts at cfg.Interval
 }
 
 // New builds an Announcer. A nil logger discards logs.
@@ -71,7 +76,7 @@ func New(cfg Config, log *slog.Logger) *Announcer {
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = 10 * time.Second
 	}
-	return &Announcer{cfg: cfg, http: &http.Client{}, log: log}
+	return &Announcer{cfg: cfg, http: &http.Client{}, log: log, interval: cfg.Interval}
 }
 
 // WorkerID returns the controller-assigned ID, or "" before the first
@@ -82,6 +87,13 @@ func (a *Announcer) WorkerID() string {
 	return a.workerID
 }
 
+// Interval returns the current announce interval.
+func (a *Announcer) Interval() time.Duration {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.interval
+}
+
 // Run registers and keeps announcing until ctx is cancelled or the
 // controller reports the worker as retired. Failed attempts are retried with
 // exponential back-off. Run returns ErrRetired or ctx's error.
@@ -89,8 +101,8 @@ func (a *Announcer) Run(ctx context.Context) error {
 	backoff := a.cfg.RetryMin
 	failing := false
 	for {
-		wait := a.cfg.Interval
 		err := a.announce(ctx)
+		wait := a.Interval()
 		switch {
 		case err == nil:
 			if failing {
@@ -165,6 +177,15 @@ func (a *Announcer) announce(ctx context.Context) error {
 	}
 	if out.WorkerID == "" {
 		return errors.New("register: controller returned an empty worker id")
+	}
+	if d := time.Duration(out.AnnounceIntervalSeconds) * time.Second; d > 0 {
+		a.mu.Lock()
+		changed := a.interval != d
+		a.interval = d
+		a.mu.Unlock()
+		if changed {
+			a.log.Info("using the controller's announce interval", "interval", d.String())
+		}
 	}
 	if out.WorkerID != current {
 		a.mu.Lock()

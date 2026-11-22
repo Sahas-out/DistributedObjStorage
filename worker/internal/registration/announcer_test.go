@@ -19,6 +19,7 @@ import (
 type fakeController struct {
 	failFirst   int32
 	retireAfter int32
+	intervalSec int // announce_interval_seconds in responses; 0 omits it
 
 	calls    atomic.Int32
 	ok       atomic.Int32
@@ -52,7 +53,7 @@ func (f *fakeController) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		id = "assigned-1"
 	}
-	_ = json.NewEncoder(w).Encode(protocol.RegisterResponse{WorkerID: id, Status: "AVAILABLE"})
+	_ = json.NewEncoder(w).Encode(protocol.RegisterResponse{WorkerID: id, Status: "AVAILABLE", AnnounceIntervalSeconds: f.intervalSec})
 }
 
 func (f *fakeController) snapshot() []protocol.RegisterRequest {
@@ -133,5 +134,25 @@ func TestStopsWhenRetired(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop after being retired")
+	}
+}
+
+func TestAdoptsControllerInterval(t *testing.T) {
+	fc := &fakeController{intervalSec: 7}
+	srv := httptest.NewServer(fc)
+	defer srv.Close()
+	a := newAnnouncer(t, srv.URL)
+	if got := a.Interval(); got != 20*time.Millisecond {
+		t.Fatalf("initial interval = %s", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = a.Run(ctx) }()
+	waitFor(t, func() bool { return a.Interval() == 7*time.Second })
+	// With a 7s interval there is no second announcement during the test.
+	time.Sleep(100 * time.Millisecond)
+	if n := fc.ok.Load(); n != 1 {
+		t.Fatalf("announcements = %d, want 1", n)
 	}
 }

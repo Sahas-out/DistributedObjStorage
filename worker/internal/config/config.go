@@ -27,8 +27,10 @@ type Config struct {
 	// under DataRoot. Empty means use DataDir directly.
 	DataRoot string
 
-	ControllerURL    string        // CONTROLLER_URL, default http://controller:8080
-	AnnounceInterval time.Duration // ANNOUNCE_INTERVAL, default 30s
+	ControllerURL string // CONTROLLER_URL, default http://controller:8080
+	// AnnounceInterval (ANNOUNCE_INTERVAL, default 30s) is used until the
+	// controller's first answer, which carries the interval it expects.
+	AnnounceInterval time.Duration
 }
 
 // Load reads configuration from the environment.

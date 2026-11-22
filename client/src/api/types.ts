@@ -29,7 +29,7 @@ export interface WorkerStats {
   requests: RequestCounts;
 }
 
-export type WorkerStatus = "AVAILABLE" | "READY";
+export type WorkerStatus = "AVAILABLE" | "READY" | "DEAD";
 
 export interface DashboardWorker {
   worker_id: string;
@@ -47,6 +47,15 @@ export interface ControllerSummary {
   announce_interval_seconds: number;
   object_count: number;
   logical_bytes: number;
+  recovery: RecoveryStatus;
+}
+
+/** Result of the controller's latest recovery scan. */
+export interface RecoveryStatus {
+  last_scan: string; // zero time before the first scan
+  degraded_chunks: number; // fewer good copies than the replication factor
+  unavailable_chunks: number; // no readable copy; waiting for a dead worker
+  orphan_replicas: number;
 }
 
 export interface DashboardOverview {

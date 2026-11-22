@@ -305,9 +305,10 @@ func (d *Download) Stream(w io.Writer) error {
 // order so reads spread across workers. Workers in failed (those that
 // couldn't be reached earlier in the same download) go last, and workers that
 // can't be reached now are added to it. Each copy is checked against the
-// persisted size and checksum; a copy that fails is marked CORRUPTED and the
-// next one is tried, so damaged data is never returned while a good copy
-// exists.
+// persisted size and checksum; a copy that fails is marked CORRUPTED (one the
+// worker doesn't have is marked LOST) and the next one is tried, so damaged
+// data is never returned while a good copy exists. The recovery job repairs
+// the marked copies later.
 func (s *Service) fetchChunk(ctx context.Context, objectID string, ref metadata.Chunk, failed map[string]bool) ([]byte, error) {
 	locs := s.cluster.Readable(objectID, ref.SequenceNo)
 	if len(locs) == 0 {
@@ -335,10 +336,11 @@ func (s *Service) fetchChunk(ctx context.Context, objectID string, ref metadata.
 			s.events.Record(protocol.EventReplicaCorrupted, events.Error,
 				fmt.Sprintf("corrupted copy of chunk %d detected; marked CORRUPTED, served from another copy", ref.SequenceNo), objectID, l.WorkerID)
 		case errors.Is(err, workers.ErrChunkNotFound):
-			s.log.Warn("replica missing on worker; trying another copy",
+			s.cluster.SetStatus(l.ChunkID, cluster.ReplicaLost)
+			s.log.Warn("replica missing on worker; marked lost, trying another copy",
 				"object_id", objectID, "sequence_no", ref.SequenceNo, "chunk_id", l.ChunkID, "worker_id", l.WorkerID)
 			s.events.Record(protocol.EventReplicaMissing, events.Warn,
-				fmt.Sprintf("copy of chunk %d missing on worker", ref.SequenceNo), objectID, l.WorkerID)
+				fmt.Sprintf("copy of chunk %d missing on worker; marked LOST", ref.SequenceNo), objectID, l.WorkerID)
 		default:
 			allDamaged = false
 			failed[l.WorkerID] = true
@@ -353,18 +355,14 @@ func (s *Service) fetchChunk(ctx context.Context, objectID string, ref metadata.
 }
 
 // fetchReplica reads one replica and verifies it against the persisted
-// metadata. Workers keep no checksums, so this is where corruption is caught.
+// metadata.
 func (s *Service) fetchReplica(ctx context.Context, objectID string, ref metadata.Chunk, l cluster.Location) ([]byte, error) {
 	c, err := s.chunks.GetChunk(ctx, l.Addr, l.ChunkID)
 	if err != nil {
 		return nil, err
 	}
-	if c.ObjectID != objectID || c.SequenceNo != ref.SequenceNo {
-		return nil, fmt.Errorf("%w: chunk %s belongs to object %s sequence %d", workers.ErrChunkCorrupted, l.ChunkID, c.ObjectID, c.SequenceNo)
-	}
-	sum := sha256.Sum256(c.Data)
-	if int64(len(c.Data)) != ref.Size || hex.EncodeToString(sum[:]) != ref.Checksum {
-		return nil, fmt.Errorf("%w: chunk %s does not match its recorded checksum", workers.ErrChunkCorrupted, l.ChunkID)
+	if err := workers.VerifyChunk(c, l.ChunkID, objectID, ref.SequenceNo, ref.Size, ref.Checksum); err != nil {
+		return nil, err
 	}
 	return c.Data, nil
 }

@@ -36,6 +36,22 @@ type ControllerSummary struct {
 	AnnounceIntervalSeconds int       `json:"announce_interval_seconds"`
 	ObjectCount             int       `json:"object_count"`
 	LogicalBytes            int64     `json:"logical_bytes"`
+	// Recovery is the result of the recovery job's latest scan.
+	Recovery RecoveryStatus `json:"recovery"`
+}
+
+// RecoveryStatus summarises the recovery job's latest scan of every chunk.
+type RecoveryStatus struct {
+	LastScan time.Time `json:"last_scan"` // zero before the first scan
+	// DegradedChunks have at least one readable copy but fewer than the
+	// replication factor (recovery is restoring them).
+	DegradedChunks int `json:"degraded_chunks"`
+	// UnavailableChunks have no readable copy right now; a copy is on a dead
+	// worker that may come back.
+	UnavailableChunks int `json:"unavailable_chunks"`
+	// OrphanReplicas are copies that belong to no object, waiting to be
+	// deleted.
+	OrphanReplicas int `json:"orphan_replicas"`
 }
 
 // DashboardWorker is one worker in a DashboardOverview: the controller's view
@@ -81,4 +97,14 @@ const (
 	EventWorkerReady        = "worker_ready"
 	EventWorkerSyncFailed   = "worker_sync_failed"
 	EventWorkerDeregistered = "worker_deregistered"
+
+	// Failure detection and recovery (phase 5).
+	EventWorkerDead       = "worker_dead"
+	EventWorkerRevived    = "worker_revived"
+	EventReplicaRestored  = "replica_restored"  // a new copy replaced a lost one
+	EventReplicaRepaired  = "replica_repaired"  // a corrupted or missing copy was rewritten in place
+	EventReplicaTrimmed   = "replica_trimmed"   // an extra copy beyond the replication factor was removed
+	EventOrphanRemoved    = "orphan_removed"    // an orphan copy was deleted from its worker
+	EventChunkUnavailable = "chunk_unavailable" // no readable copy; waiting for a dead worker to return
+	EventObjectLost       = "object_lost"       // every copy of a chunk was corrupted; object deleted
 )

@@ -16,9 +16,14 @@ type Config struct {
 	WorkerTimeout     time.Duration // WORKER_TIMEOUT, default 30s, per worker request
 	ReplicationFactor int           // REPLICATION_FACTOR, default 2: copies of each chunk
 	// AnnounceInterval (ANNOUNCE_INTERVAL, default 30s) is the re-registration
-	// interval reported to workers. Workers use their own setting; this one is
-	// informational until failure detection uses it.
+	// interval reported to workers; workers adopt it.
 	AnnounceInterval time.Duration
+	// WorkerDeadAfter (WORKER_DEAD_AFTER, default 3 x AnnounceInterval) is how
+	// long a worker may go without announcing before it is declared DEAD.
+	WorkerDeadAfter time.Duration
+	// RecoveryInterval (RECOVERY_INTERVAL, default 5s) is the time between
+	// runs of the recovery job.
+	RecoveryInterval time.Duration
 }
 
 // Load reads configuration from the environment.
@@ -50,6 +55,22 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid ANNOUNCE_INTERVAL %q", v)
 		}
 		cfg.AnnounceInterval = d
+	}
+	cfg.WorkerDeadAfter = 3 * cfg.AnnounceInterval
+	if v := os.Getenv("WORKER_DEAD_AFTER"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= cfg.AnnounceInterval {
+			return Config{}, fmt.Errorf("invalid WORKER_DEAD_AFTER %q: must be longer than ANNOUNCE_INTERVAL (%s)", v, cfg.AnnounceInterval)
+		}
+		cfg.WorkerDeadAfter = d
+	}
+	cfg.RecoveryInterval = 5 * time.Second
+	if v := os.Getenv("RECOVERY_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 100*time.Millisecond {
+			return Config{}, fmt.Errorf("invalid RECOVERY_INTERVAL %q", v)
+		}
+		cfg.RecoveryInterval = d
 	}
 	if v := os.Getenv("WORKER_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)

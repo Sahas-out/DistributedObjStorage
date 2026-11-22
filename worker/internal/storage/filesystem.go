@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -251,9 +252,13 @@ func (f *Filesystem) Open(ctx context.Context, chunkID string) (io.ReadCloser, C
 		return nil, ChunkMetadata{}, fmt.Errorf("read chunk metadata: %w", err)
 	}
 	file, err := os.Open(f.abs(meta.FilePath))
+	if errors.Is(err, fs.ErrNotExist) {
+		// The row exists but its data file is gone: the chunk is lost. Report
+		// it as not found, so the controller marks this copy LOST and its
+		// recovery job writes it back (a PUT replaces the stale row).
+		return nil, ChunkMetadata{}, fmt.Errorf("%w: data file of chunk %s is missing", ErrNotFound, chunkID)
+	}
 	if err != nil {
-		// The row exists but its data is gone: report a storage failure, not
-		// "not found", so the controller treats this replica as bad.
 		return nil, ChunkMetadata{}, fmt.Errorf("open chunk %s data: %w", chunkID, err)
 	}
 	return file, meta, nil

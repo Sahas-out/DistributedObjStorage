@@ -3,9 +3,10 @@ import type { Rate } from "../../hooks/useThroughput";
 import { formatBytes, formatDuration, formatReqRate } from "../../lib/format";
 import { workerColor } from "../../lib/palette";
 
-export type Health = "ready" | "syncing" | "unreachable";
+export type Health = "ready" | "syncing" | "unreachable" | "dead";
 
 export function workerHealth(w: DashboardWorker): Health {
+  if (w.status === "DEAD") return "dead";
   if (!w.stats) return "unreachable";
   return w.status === "READY" ? "ready" : "syncing";
 }
@@ -14,6 +15,7 @@ const healthLabel: Record<Health, { icon: string; text: string }> = {
   ready: { icon: "●", text: "READY" },
   syncing: { icon: "◐", text: "AVAILABLE · loading chunks" },
   unreachable: { icon: "▲", text: "UNREACHABLE" },
+  dead: { icon: "✕", text: "DEAD · missed heartbeats" },
 };
 
 export function StatusPill({ health }: { health: Health }) {
@@ -79,7 +81,9 @@ export function WorkerCard({ worker, rate, maxChunks }: { worker: DashboardWorke
           </dd>
         </div>
       </dl>
-      {worker.stats_error && (
+      {h === "dead" ? (
+        <div className="small err worker-error">No heartbeat; its copies are being restored on other workers</div>
+      ) : worker.stats_error && (
         <div className="small err worker-error" title={worker.stats_error}>
           Controller can't reach this worker
         </div>

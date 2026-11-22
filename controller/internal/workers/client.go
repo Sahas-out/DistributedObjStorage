@@ -5,7 +5,9 @@ package workers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -235,4 +237,19 @@ func (c *Client) Stats(ctx context.Context, addr string) (protocol.WorkerStats, 
 		return protocol.WorkerStats{}, fmt.Errorf("%w: stats: decode response: %v", ErrUnavailable, err)
 	}
 	return out, nil
+}
+
+// VerifyChunk checks a chunk read from a worker against what the controller
+// recorded for it: the owning object and position, the size and the SHA-256
+// digest. Workers keep no checksums, so this is where corruption is caught.
+// A mismatch returns an error wrapping ErrChunkCorrupted.
+func VerifyChunk(c protocol.Chunk, chunkID, objectID string, seq int, size int64, checksum string) error {
+	if c.ObjectID != objectID || c.SequenceNo != seq {
+		return fmt.Errorf("%w: chunk %s belongs to object %s sequence %d", ErrChunkCorrupted, chunkID, c.ObjectID, c.SequenceNo)
+	}
+	sum := sha256.Sum256(c.Data)
+	if int64(len(c.Data)) != size || hex.EncodeToString(sum[:]) != checksum {
+		return fmt.Errorf("%w: chunk %s does not match its recorded checksum", ErrChunkCorrupted, chunkID)
+	}
+	return nil
 }

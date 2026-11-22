@@ -251,7 +251,7 @@ func TestOpenMissing(t *testing.T) {
 	}
 }
 
-func TestOpenWithMissingDataFileIsAStorageError(t *testing.T) {
+func TestOpenWithMissingDataFileIsNotFound(t *testing.T) {
 	dir := t.TempDir()
 	f := newStore(t, dir)
 	meta := put(t, f, "c1", "o", 0, []byte("x"))
@@ -259,9 +259,16 @@ func TestOpenWithMissingDataFileIsAStorageError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := f.Open(context.Background(), "c1")
-	if err == nil || errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want a non-ErrNotFound error", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
+	// Putting the chunk again repairs it.
+	put(t, f, "c1", "o", 0, []byte("x"))
+	rc, _, err := f.Open(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("Open after re-put: %v", err)
+	}
+	rc.Close()
 }
 
 func TestDelete(t *testing.T) {

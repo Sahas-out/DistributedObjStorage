@@ -115,6 +115,9 @@ func (m *Membership) Register(req protocol.RegisterRequest, remoteIP string) (pr
 	case res.New:
 		m.log.Info("worker registered", "worker_id", id, "addr", addr)
 		m.events.Record(protocol.EventWorkerRegistered, events.Info, "worker registered at "+addr, "", id)
+	case res.Revived:
+		m.log.Info("dead worker announced again; reloading its chunks", "worker_id", id, "addr", addr)
+		m.events.Record(protocol.EventWorkerRevived, events.Info, "dead worker is back at "+addr+"; reloading its chunks", "", id)
 	case res.Moved:
 		m.log.Info("worker re-registered at a new address; reloading its chunks", "worker_id", id, "addr", addr)
 		m.events.Record(protocol.EventWorkerMoved, events.Warn, "worker moved to "+addr+"; reloading its chunks", "", id)

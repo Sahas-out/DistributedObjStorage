@@ -140,3 +140,29 @@ func TestListAndDelete(t *testing.T) {
 		t.Fatalf("object_chunks rows for deleted object = %d, %v", n, err)
 	}
 }
+
+func TestAllChunks(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if got, err := s.AllChunks(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("AllChunks on empty store = %v, %v", got, err)
+	}
+	for _, id := range []string{"b", "a"} {
+		if err := s.Create(ctx, sampleObject(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.AllChunks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ChunkRef{
+		{ObjectID: "a", Chunk: Chunk{SequenceNo: 0, Size: 10, Checksum: "a"}},
+		{ObjectID: "a", Chunk: Chunk{SequenceNo: 1, Size: 5, Checksum: "b"}},
+		{ObjectID: "b", Chunk: Chunk{SequenceNo: 0, Size: 10, Checksum: "a"}},
+		{ObjectID: "b", Chunk: Chunk{SequenceNo: 1, Size: 5, Checksum: "b"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AllChunks = %+v\nwant %+v", got, want)
+	}
+}

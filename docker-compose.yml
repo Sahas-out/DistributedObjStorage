@@ -19,6 +19,13 @@ services:
       PORT: "8080"
       DATA_DIR: /data
       REPLICATION_FACTOR: "2"
+      # Workers announce every ANNOUNCE_INTERVAL (they adopt this value). One
+      # that stays silent for WORKER_DEAD_AFTER (default 3 x the interval) is
+      # declared DEAD and the recovery job, which runs every
+      # RECOVERY_INTERVAL, restores its copies elsewhere.
+      ANNOUNCE_INTERVAL: 10s
+      WORKER_DEAD_AFTER: 30s
+      RECOVERY_INTERVAL: 5s
     ports:
       - "8080:8080"
     volumes:
@@ -35,7 +42,8 @@ services:
     environment:
       PORT: "8080"
       CONTROLLER_URL: http://controller:8080
-      ANNOUNCE_INTERVAL: 30s
+      # Replaced by the controller's ANNOUNCE_INTERVAL after registering.
+      ANNOUNCE_INTERVAL: 10s
       # All workers share one volume. Each claims its own slot-<n> directory
       # under DATA_ROOT and keeps its chunks there, so data
       # survives restarts, `down`/`up` and re-scaling.

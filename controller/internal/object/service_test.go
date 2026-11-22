@@ -422,3 +422,30 @@ func TestDownloadTriesAFailedWorkerOnlyOnce(t *testing.T) {
 		t.Fatalf("unreachable worker was tried %d times in one download of %d chunks; want at most once", n, obj.ChunkCount)
 	}
 }
+
+func TestDownloadMarksMissingReplicaLost(t *testing.T) {
+	svc, w, _, reg := setup(t, 2)
+	data := []byte("abcdefgh")
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locs := reg.ObjectReplicas(obj.ObjectID)
+	gone := locs[0]
+	w.mu.Lock()
+	delete(w.chunks[gone.Addr], gone.ChunkID)
+	w.mu.Unlock()
+
+	// Read until the missing copy has been tried (random order).
+	for i := range 50 {
+		got, err := download(t, svc, obj.ObjectID)
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("download %d = %q, %v", i, got, err)
+		}
+	}
+	for _, l := range reg.ObjectReplicas(obj.ObjectID) {
+		if l.ChunkID == gone.ChunkID && l.Status != cluster.ReplicaLost {
+			t.Fatalf("missing replica status = %s, want LOST", l.Status)
+		}
+	}
+}

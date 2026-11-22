@@ -243,6 +243,9 @@ input:disabled { opacity: 0.5; }
 .pill-syncing span { color: var(--warning); }
 .pill-unreachable { background: rgba(208, 59, 59, 0.18); }
 .pill-unreachable span { color: var(--critical); }
+.pill-dead { background: rgba(208, 59, 59, 0.28); }
+.pill-dead span { color: var(--critical); }
+.worker-card.is-dead { opacity: 0.6; border-color: rgba(208, 59, 59, 0.5); border-top-color: var(--worker); }
 .worker-chunks { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; }
 .worker-chunks .big { font-size: 28px; font-weight: 600; }
 .meter { height: 4px; background: var(--grid); border-radius: 2px; margin: 6px 0 12px; overflow: hidden; }

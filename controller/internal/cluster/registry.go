@@ -13,10 +13,9 @@
 //   - chunks:  chunk_id  -> object_id, sequence_no, worker_id, status
 //
 // Placement, uploads, downloads and deletes all read and update these
-// tables. Future background jobs (lost-chunk recovery, corruption repair,
-// orphan cleanup, rebalancing) are meant to watch them the same way: an event
-// such as a worker failure only changes a status here, and the job that owns
-// that status reacts to it.
+// tables. The recovery job (controller/internal/recovery) watches them too:
+// an event such as a missed heartbeat or a failed checksum only changes a
+// status here, and recovery reacts to it.
 package cluster
 
 import (
@@ -37,6 +36,10 @@ const (
 	// WorkerReady means the chunk list is loaded; the worker serves reads and
 	// receives new chunks.
 	WorkerReady WorkerStatus = "READY"
+	// WorkerDead means the worker stopped announcing itself. It gets no reads
+	// and no new chunks; its ACTIVE copies are marked LOST. If it announces
+	// again its chunk list is reloaded.
+	WorkerDead WorkerStatus = "DEAD"
 )
 
 // ReplicaStatus is the state of one copy of a chunk.
@@ -49,11 +52,15 @@ const (
 	// ReplicaActive is a committed, readable copy.
 	ReplicaActive ReplicaStatus = "ACTIVE"
 	// ReplicaCorrupted is a copy that failed the checksum check on read.
-	// It is no longer served; repairing it is a later phase.
+	// It is no longer served; recovery overwrites it with a good copy.
 	ReplicaCorrupted ReplicaStatus = "CORRUPTED"
 	// ReplicaOrphan is a copy on a worker that belongs to no object (left by
-	// a failed upload or delete). Removing it is a later phase.
+	// a failed upload or delete). Recovery deletes it.
 	ReplicaOrphan ReplicaStatus = "ORPHAN"
+	// ReplicaLost is a copy that can't be read: its worker is DEAD (the copy
+	// may come back if the worker does), or its worker reported that it
+	// doesn't have the file. Recovery restores the chunk from another copy.
+	ReplicaLost ReplicaStatus = "LOST"
 )
 
 // Errors returned by the registry.
@@ -82,10 +89,18 @@ type Replica struct {
 	Status   ReplicaStatus
 }
 
-// Location is a replica together with its worker's current address.
+// Location is a replica together with its worker's current address and
+// status.
 type Location struct {
 	Replica
-	Addr string
+	Addr         string
+	WorkerStatus WorkerStatus
+}
+
+// ChunkKey names one chunk of an object; all of its replicas share it.
+type ChunkKey struct {
+	ObjectID string
+	SeqNo    int
 }
 
 type workerEntry struct {
@@ -127,9 +142,10 @@ func NewRegistry(policy Policy) *Registry {
 
 // AnnounceResult tells Membership what an announcement changed.
 type AnnounceResult struct {
-	Worker Worker
-	New    bool // the worker wasn't known before
-	Moved  bool // the worker came back at a different address
+	Worker  Worker
+	New     bool // the worker wasn't known before
+	Moved   bool // the worker came back at a different address
+	Revived bool // the worker was DEAD and announced again
 	// Replaced lists workers removed because this worker now uses their
 	// address: a restarted worker registers under a new ID, and only one
 	// process can listen on an address, so the old entry is dead.
@@ -148,6 +164,9 @@ type AnnounceResult struct {
 //     case a sync is requested again.
 //   - Known worker at a new address: its replicas are dropped, it goes back
 //     to AVAILABLE and a sync is requested.
+//   - Known DEAD worker at the same address (it was unreachable for a while,
+//     not restarted): treated the same way, since what it holds now is
+//     unknown. Revived is set.
 func (r *Registry) Announce(id, addr string) (AnnounceResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -173,11 +192,12 @@ func (r *Registry) Announce(id, addr string) (AnnounceResult, error) {
 		r.workers[id] = w
 		r.byWorker[id] = map[string]struct{}{}
 		res.New = true
-	case w.Addr != addr:
+	case w.Addr != addr || w.Status == WorkerDead:
+		res.Moved = w.Addr != addr
+		res.Revived = w.Status == WorkerDead
 		r.dropReplicasLocked(id)
 		r.nextGen++
 		w.Addr, w.Status, w.gen, w.syncGen = addr, WorkerAvailable, r.nextGen, 0
-		res.Moved = true
 	}
 	w.LastSeen = r.now()
 	if w.Status == WorkerAvailable && w.syncGen != w.gen {
@@ -307,7 +327,7 @@ func (r *Registry) Place(objectID string, seq, rf int, newChunkID func() (string
 		}
 		rep := Replica{ChunkID: id, ObjectID: objectID, SeqNo: seq, WorkerID: w.ID, Status: ReplicaPending}
 		r.addLocked(rep)
-		out = append(out, Location{Replica: rep, Addr: w.Addr})
+		out = append(out, Location{Replica: rep, Addr: w.Addr, WorkerStatus: w.Status})
 	}
 	return out, nil
 }
@@ -342,7 +362,7 @@ func (r *Registry) Readable(objectID string, seq int) []Location {
 		rep := r.chunks[id]
 		w := r.workers[rep.WorkerID]
 		if rep.Status == ReplicaActive && w != nil && w.Status == WorkerReady {
-			out = append(out, Location{Replica: *rep, Addr: w.Addr})
+			out = append(out, Location{Replica: *rep, Addr: w.Addr, WorkerStatus: w.Status})
 		}
 	}
 	return out
@@ -356,12 +376,7 @@ func (r *Registry) ObjectReplicas(objectID string) []Location {
 	var out []Location
 	for _, ids := range r.byObject[objectID] {
 		for id := range ids {
-			rep := r.chunks[id]
-			loc := Location{Replica: *rep}
-			if w := r.workers[rep.WorkerID]; w != nil {
-				loc.Addr = w.Addr
-			}
-			out = append(out, loc)
+			out = append(out, r.locationLocked(r.chunks[id]))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -371,6 +386,16 @@ func (r *Registry) ObjectReplicas(objectID string) []Location {
 		return out[i].WorkerID < out[j].WorkerID
 	})
 	return out
+}
+
+// locationLocked pairs a replica with its worker's address and status. Both
+// are empty if the worker is no longer registered.
+func (r *Registry) locationLocked(rep *Replica) Location {
+	loc := Location{Replica: *rep}
+	if w := r.workers[rep.WorkerID]; w != nil {
+		loc.Addr, loc.WorkerStatus = w.Addr, w.Status
+	}
+	return loc
 }
 
 func (r *Registry) snapshotLocked(w *workerEntry) Worker {

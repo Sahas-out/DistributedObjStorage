@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/events"
 	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
 )
@@ -27,6 +28,8 @@ type Dashboard struct {
 	ReplicationFactor int
 	AnnounceInterval  time.Duration
 	StartedAt         time.Time
+	// Recovery reports the recovery job's latest scan; nil leaves it empty.
+	Recovery func() protocol.RecoveryStatus
 }
 
 // EnableDashboard turns on the /dashboard endpoints. Call it before Handler.
@@ -50,6 +53,9 @@ func (s *Server) handleDashboardOverview(w http.ResponseWriter, r *http.Request)
 	for _, o := range objs {
 		summary.LogicalBytes += o.Size
 	}
+	if s.dash.Recovery != nil {
+		summary.Recovery = s.dash.Recovery()
+	}
 
 	ws := s.members.Workers()
 	out := make([]protocol.DashboardWorker, len(ws))
@@ -61,6 +67,10 @@ func (s *Server) handleDashboardOverview(w http.ResponseWriter, r *http.Request)
 			Status:     string(wk.Status),
 			ChunkCount: wk.ChunkCount,
 			LastSeen:   wk.LastSeen.UTC(),
+		}
+		if wk.Status == cluster.WorkerDead {
+			out[i].StatsError = "worker is dead"
+			continue
 		}
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(r.Context(), statsTimeout)

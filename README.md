@@ -2,7 +2,9 @@
 
 A mini distributed cloud object store: one controller, four storage workers, and clients. Objects are split into 1 MiB chunks and each chunk is stored on two workers. See [docs/Mini_Distributed_Cloud_Object_Store.pdf](docs/Mini_Distributed_Cloud_Object_Store.pdf) for the project statement.
 
-**Current status: Phase 3.** Workers register themselves with the controller, and the number of workers can be scaled with one command. Every chunk is stored on 2 different workers (replication factor 2), and chunks are spread evenly across workers. Clients can upload, download, list and delete objects. A copy that fails its checksum is detected, marked, and skipped in favour of the other copy. Detecting worker failures, restoring lost or corrupted copies, and custom metadata come in later phases.
+**Current status: Phase 5.** Workers register themselves with the controller, and the number of workers can be scaled with one command. Every chunk is stored on 2 different workers (replication factor 2), and chunks are spread evenly across workers. Clients can upload, download, list and delete objects. A copy that fails its checksum is detected, marked, and skipped in favour of the other copy.
+
+The controller also detects workers that stop sending heartbeats. A background recovery job restores lost copies, repairs corrupted ones, removes extra and orphan copies, and keeps an object whose only remaining copy sits on a dead worker, in case that worker comes back. Rebalancing existing chunks onto new workers and custom metadata come later.
 
 ## Quick start: try the whole flow
 
@@ -46,7 +48,33 @@ docker compose logs controller | grep "corrupted replica"
 curl -s localhost:8080/internal/objects/$ID/replicas        # that copy now shows CORRUPTED
 ```
 
-Replicas are read in random order, so you may need a few downloads before the damaged copy is picked. The download stays correct either way.
+Replicas are read in random order, so you may need a few downloads before the damaged copy is picked. The download stays correct either way. Within one recovery tick (5 s) the copy is rewritten in place from the good copy and shows `ACTIVE` again:
+
+```sh
+docker compose logs controller | grep "repaired copy in place"
+curl -s localhost:8080/internal/objects/$ID/replicas        # back to ACTIVE, same chunk_id, same worker
+```
+
+If **every** copy of a chunk is corrupted (repeat the `dd` on both workers that hold it), the object can't be restored. Recovery deletes it and logs `object deleted`, and `GET` returns `404`.
+
+### Demo: worker failure and recovery
+
+```sh
+curl -s localhost:8080/internal/workers               # 4 READY workers
+docker ps --format '{{.Names}}' | grep worker        # e.g. distributedobjectstorage-worker-1
+docker stop distributedobjectstorage-worker-1         # stop one worker that holds copies
+sleep 35                                              # 3 missed heartbeats (10 s each)
+curl -s localhost:8080/internal/workers               # that worker is now DEAD
+curl -s localhost:8080/internal/objects/$ID/replicas  # still 2 ACTIVE copies of every chunk, on the other workers
+docker compose logs controller | grep -E "declared dead|restored a copy"
+curl -s -o downloaded.bin localhost:8080/api/v1/objects/$ID && cmp original.bin downloaded.bin && echo "bytes match"
+
+docker start distributedobjectstorage-worker-1        # it comes back with its old chunks: 3 copies...
+sleep 10
+docker compose logs controller | grep "removed extra copy"   # ...trimmed back to 2
+```
+
+If you stop **both** workers that hold a chunk, that chunk has no readable copy. Downloads answer `503 object_unavailable`, but the object is **kept**. The dashboard shows "unavailable", and the copies are marked `LOST`. When either worker starts again, its copy comes back and the chunk is re-replicated.
 
 ## How the cluster works
 
@@ -57,7 +85,8 @@ The controller has no list of workers. Each worker knows `CONTROLLER_URL`. At st
 1. **First time:** `worker_id` is empty. The controller assigns one (`w-<16 hex>`), and the worker keeps it in memory and sends it on every later call. The ID lasts only as long as the worker process: a restarted worker registers again and gets a new ID. If another worker entry still has the same address, that entry belongs to the dead process, so the controller replaces it. If the restarted worker reports chunks that are still listed under its old entry, those chunks move to the new ID, because the files are on its disk.
 2. **Address:** the controller takes the worker's address from the request's source IP (its container IP on the Docker network) plus the port. It calls each container directly, so Docker's service-name load balancing never applies.
 3. **Chunk report:** for a worker it doesn't know yet, the controller answers right away with status `AVAILABLE`. It then pulls the worker's chunk list from `GET /internals/chunks/metadata` in the background. Once that is loaded, the worker becomes `READY` and starts receiving new chunks.
-4. **Re-announcing:** for a known worker at the same address, an announcement only updates `last_seen`. This is the worker's heartbeat: worker-failure detection (next phase) will mark a worker that stops announcing as failed.
+4. **Re-announcing:** for a known worker at the same address, an announcement only updates `last_seen`. This is the worker's heartbeat. The register response carries `announce_interval_seconds`, and the worker adopts it, so the controller and the worker agree on the interval.
+5. **Failure:** a worker that hasn't announced for `WORKER_DEAD_AFTER` (30 s in compose) is declared `DEAD`. If it announces again with the same ID (it was only unreachable), it goes back to `AVAILABLE` and its chunk list is reloaded. A restarted worker gets a new ID as usual and reports the chunks on its disk.
 
 `DELETE /internal/workers/{worker_id}` removes a worker that is leaving voluntarily. The controller forgets it and its copies and refuses the ID afterwards. The worker logs this and stops announcing itself. Stopping or scaling down a container does **not** deregister it.
 
@@ -66,7 +95,7 @@ The controller has no list of workers. Each worker knows `CONTROLLER_URL`. At st
 | Where | What | Why |
 |---|---|---|
 | SQLite (`DATA_DIR/metadata.db`) | `objects` (ID, size, checksum, chunk count, creation time) and `object_chunks` (object ID, sequence number, size, checksum) | These facts don't change while the object exists. The checksums let the controller verify any copy. |
-| Memory: worker table | worker ID → address, status (`AVAILABLE`/`READY`), chunk count, last seen | IDs and addresses last only as long as a worker process. Built from registrations. |
+| Memory: worker table | worker ID → address, status (`AVAILABLE`/`READY`/`DEAD`), chunk count, last seen | IDs and addresses last only as long as a worker process. Built from registrations. |
 | Memory: chunk table | chunk ID → object ID, sequence number, worker ID, status | Copies can be lost or corrupted, so where they live is runtime state. Rebuilt from the workers' chunk reports. |
 
 Copy statuses in the chunk table:
@@ -75,16 +104,37 @@ Copy statuses in the chunk table:
 |---|---|
 | `PENDING` | An upload is writing it. |
 | `ACTIVE` | Committed and readable. |
-| `CORRUPTED` | Failed the checksum check on a read; no longer served. |
-| `ORPHAN` | On a worker, but no object owns it, for example after a failed delete. |
+| `CORRUPTED` | Failed the checksum check on a read; no longer served. Recovery rewrites it. |
+| `LOST` | Its worker is `DEAD`, or the worker answered that it doesn't have the file. Recovery restores it. |
+| `ORPHAN` | On a worker, but no object owns it, for example after a failed delete or a delete while the worker was down. Recovery deletes it. |
 
-Background jobs planned for later phases (lost-copy recovery, corruption repair, orphan cleanup, rebalancing) will watch these two tables and react to status changes.
+### Failure detection and recovery
+
+One background goroutine in the controller, the recovery job (`controller/internal/recovery`), handles every failure. Events only change a status in the tables above. A missed heartbeat makes a worker `DEAD`, and a failed checksum or a `404` on download marks a copy `CORRUPTED` or `LOST`. On every tick (`RECOVERY_INTERVAL`, 5 s) the job:
+
+1. **Detects failures.** Workers silent for longer than `WORKER_DEAD_AFTER` become `DEAD`, and their `ACTIVE` copies become `LOST`.
+2. **Checks every chunk in SQLite** against its copies. A good copy is `ACTIVE` on a `READY` worker, and every copy it reads is verified against the stored SHA-256.
+
+| Situation | Action |
+|---|---|
+| A `CORRUPTED` or missing copy on a `READY` worker, and a good copy exists | Rewrite it **in place**: same worker, same chunk ID. |
+| Fewer good copies than `REPLICATION_FACTOR` | Copy the chunk to the least-loaded `READY` worker that doesn't hold it yet. Then forget the `LOST` entries on dead workers. |
+| More good copies than `REPLICATION_FACTOR` (a dead worker came back) | Delete the extra copy from the most-loaded worker. |
+| No good copy, but a copy is on a `DEAD` worker | Keep the object and wait (the chunk is "unavailable"). The worker may come back with it. |
+| Every copy is corrupted or missing | The chunk can't be restored, so **delete the object**. |
+
+3. **Deletes `ORPHAN` copies** from their workers.
+
+Safety rules:
+- A chunk with a `PENDING` copy (an upload in progress) is skipped until the next tick.
+- Nothing is deleted while a worker is still loading its chunk list, because it may hold a good copy.
+- No repairs run in the first 2 × `ANNOUNCE_INTERVAL` after the controller starts, while the in-memory tables are still filling from announcements.
 
 Every copy has its own random chunk ID (32 hex characters, like object IDs). So the two copies of a chunk never share an ID, and the controller can track each one separately.
 
 ### Placement
 
-For each chunk, the controller picks the 2 `READY` workers that hold the fewest chunks, breaking ties at random, and counts the copies against them immediately. Consecutive chunks therefore rotate across the workers, and chunk counts stay within one of each other. A newly added worker starts empty and is preferred until it catches up. Existing chunks are not moved. If fewer than 2 workers are `READY`, the upload is rejected with `503 insufficient_workers`.
+For each chunk, the controller picks the 2 `READY` workers that hold the fewest chunks, breaking ties at random, and counts the copies against them immediately. Consecutive chunks therefore rotate across the workers, and chunk counts stay within one of each other. A newly added worker starts empty and is preferred until it catches up. Existing chunks are not moved (rebalancing is planned, see [docs/phase6_rebalancing_notes.md](docs/phase6_rebalancing_notes.md)). Placement runs inside the upload request, not in a background goroutine. The recovery job uses the same policy for the new copies it creates. If fewer than 2 workers are `READY`, the upload is rejected with `503 insufficient_workers`.
 
 ### Upload, download, delete
 
@@ -94,8 +144,9 @@ For each chunk, the controller picks the 2 `READY` workers that hold the fewest 
 
 ### Known limitations in this phase
 
-- Stopping or scaling down workers can leave objects with fewer than 2 copies. Nothing restores them yet.
-- A stopped worker stays listed as `READY` until failure detection exists. Downloads still work from the other copy: connecting to the stopped worker times out after 1 s, and that worker is tried last for the rest of the download. New uploads may still pick it and then fail with `503 worker_unavailable`.
+- A stopped worker is only declared `DEAD` after `WORKER_DEAD_AFTER` (30 s). Until then it is still `READY`. Downloads still work from the other copy: connecting to the stopped worker times out after 1 s, and that worker is tried last for the rest of the download. New uploads may still pick it and then fail with `503 worker_unavailable`.
+- Corruption is only found when a copy is read, by a download or by the recovery job while it copies a chunk. There is no background scrubbing, so a rarely read chunk can lose both copies unnoticed.
+- Orphans are deleted without a grace period. In a rare race, a worker re-syncs in the middle of an upload, and that upload's copy on the worker can be deleted as an orphan. Recovery then restores the copy from the other one.
 - The project covers worker failures only. The controller is a single point of failure: its worker and chunk tables are in memory, so after a controller restart they are empty until each worker's next announcement (up to 30 s), and `CORRUPTED` marks are lost.
 
 ## Controller HTTP API
@@ -147,7 +198,9 @@ These endpoints are served on the same port as the client API, which is fine for
 | `DATA_DIR` | `/data` | Directory for `metadata.db` (created if missing) |
 | `REPLICATION_FACTOR` | `2` | Copies of each chunk, each on a different worker |
 | `WORKER_TIMEOUT` | `30s` | Time limit for each request to a worker, and for loading a worker's chunk list |
-| `ANNOUNCE_INTERVAL` | `30s` | Announce interval reported to workers in the register response |
+| `ANNOUNCE_INTERVAL` | `30s` (compose: `10s`) | Announce interval reported to workers in the register response; workers adopt it |
+| `WORKER_DEAD_AFTER` | 3 × `ANNOUNCE_INTERVAL` (compose: `30s`) | A worker silent this long is declared `DEAD`; must be longer than `ANNOUNCE_INTERVAL` |
+| `RECOVERY_INTERVAL` | `5s` | Time between runs of the recovery job |
 
 ## Worker
 
@@ -173,7 +226,7 @@ The worker stores **no checksums**. It checks `X-Chunk-Checksum` on PUT to catch
 |---|---|---|
 | `PORT` | `8080` | HTTP listen port; also sent to the controller when registering |
 | `CONTROLLER_URL` | `http://controller:8080` | Where to register |
-| `ANNOUNCE_INTERVAL` | `30s` | Time between re-registrations |
+| `ANNOUNCE_INTERVAL` | `30s` (compose: `10s`) | Time between re-registrations until the controller's first answer, whose interval then replaces it |
 | `DATA_ROOT` | (empty) | Shared volume root; enables slot mode (see above) |
 | `DATA_DIR` | `/data` | Data directory when `DATA_ROOT` is empty |
 | `MAX_CHUNK_BYTES` | `1048576` | Largest accepted chunk (1 MiB) |
@@ -214,7 +267,7 @@ All errors are JSON:
 | 400 | `invalid_chunk_id` | Chunk ID fails validation |
 | 400 | `invalid_request` | PUT body isn't a valid `Chunk` (bad JSON or base64, missing/invalid `object_id`, `sequence_no` or `data`), malformed `X-Chunk-Checksum`, or the body couldn't be read |
 | 400 | `checksum_mismatch` | PUT `data` doesn't match `X-Chunk-Checksum`; nothing is stored |
-| 404 | `chunk_not_found` | GET of a missing chunk |
+| 404 | `chunk_not_found` | GET of a missing chunk, or of one whose data file has disappeared from disk |
 | 413 | `chunk_too_large` | PUT `data` over `MAX_CHUNK_BYTES` |
 | 500 | `storage_error` | Any other storage failure; details are logged, not returned |
 | 500 | `internal_error` | A panic was recovered |
@@ -253,6 +306,7 @@ controller/cmd/controller/      controller entry point
 controller/internal/api/        client and internal routes and handlers
 controller/internal/object/     upload, download, list, delete orchestration
 controller/internal/cluster/    in-memory worker and chunk tables, placement, membership
+controller/internal/recovery/   background job: failure detection, lost/corrupted/extra/orphan copies
 controller/internal/chunk/      splits a stream into 1 MiB chunks
 controller/internal/metadata/   SQLite object and chunk metadata
 controller/internal/workers/    HTTP client for the worker API

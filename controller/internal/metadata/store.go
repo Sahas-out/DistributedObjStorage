@@ -235,3 +235,33 @@ func (s *Store) HasChunk(ctx context.Context, objectID string, seq int) (bool, e
 	}
 	return true, nil
 }
+
+// ChunkRef is one chunk of a stored object, as AllChunks lists it.
+type ChunkRef struct {
+	ObjectID string
+	Chunk
+}
+
+// AllChunks returns every chunk of every stored object, ordered by object
+// and sequence number. The recovery job compares it with the replicas the
+// workers actually hold.
+func (s *Store) AllChunks(ctx context.Context) ([]ChunkRef, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT object_id, sequence_no, size, checksum FROM object_chunks ORDER BY object_id, sequence_no`)
+	if err != nil {
+		return nil, fmt.Errorf("list chunks: %w", err)
+	}
+	defer rows.Close()
+	var out []ChunkRef
+	for rows.Next() {
+		var c ChunkRef
+		if err := rows.Scan(&c.ObjectID, &c.SequenceNo, &c.Size, &c.Checksum); err != nil {
+			return nil, fmt.Errorf("list chunks: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list chunks: %w", err)
+	}
+	return out, nil
+}

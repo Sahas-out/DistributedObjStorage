@@ -19,6 +19,7 @@ import (
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/events"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/metadata"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/object"
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/recovery"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/workers"
 	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
 )
@@ -60,6 +61,16 @@ func run(logger *slog.Logger) error {
 	feed := events.New(events.DefaultCapacity)
 	members.SetEvents(feed)
 	objects.SetEvents(feed)
+	// The one background job for failure handling: it declares silent workers
+	// dead and restores lost, corrupted and extra copies.
+	recov := recovery.New(registry, client, store, objects, recovery.Config{
+		ReplicationFactor: cfg.ReplicationFactor,
+		Interval:          cfg.RecoveryInterval,
+		DeadAfter:         cfg.WorkerDeadAfter,
+		StartupGrace:      2 * cfg.AnnounceInterval,
+	}, logger)
+	recov.SetEvents(feed)
+
 	apiServer := api.NewServer(objects, members, store.Ping, logger)
 	apiServer.EnableDashboard(api.Dashboard{
 		Stats:             client,
@@ -67,6 +78,7 @@ func run(logger *slog.Logger) error {
 		ReplicationFactor: cfg.ReplicationFactor,
 		AnnounceInterval:  cfg.AnnounceInterval,
 		StartedAt:         startedAt,
+		Recovery:          recov.Status,
 	})
 
 	// No ReadTimeout or WriteTimeout: they cap a whole request, and transferring
@@ -81,9 +93,22 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	recovCtx, stopRecovery := context.WithCancel(context.Background())
+	recovDone := make(chan struct{})
+	go func() {
+		defer close(recovDone)
+		recov.Run(recovCtx)
+	}()
+	// Stop the job before the store closes (deferred above, so it runs later).
+	defer func() {
+		stopRecovery()
+		<-recovDone
+	}()
+
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("controller listening", "addr", srv.Addr, "data_dir", cfg.DataDir, "replication_factor", cfg.ReplicationFactor)
+		logger.Info("controller listening", "addr", srv.Addr, "data_dir", cfg.DataDir, "replication_factor", cfg.ReplicationFactor,
+			"announce_interval", cfg.AnnounceInterval.String(), "worker_dead_after", cfg.WorkerDeadAfter.String())
 		errCh <- srv.ListenAndServe()
 	}()
 
