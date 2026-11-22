@@ -16,6 +16,7 @@ import (
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/api"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/config"
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/events"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/metadata"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/object"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/workers"
@@ -31,6 +32,7 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	startedAt := time.Now()
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -54,11 +56,24 @@ func run(logger *slog.Logger) error {
 	defer members.Close()
 	objects := object.NewService(client, store, registry, cfg.ReplicationFactor, protocol.DefaultChunkSize, logger)
 
+	// Recent events for the web GUI's activity feed.
+	feed := events.New(events.DefaultCapacity)
+	members.SetEvents(feed)
+	objects.SetEvents(feed)
+	apiServer := api.NewServer(objects, members, store.Ping, logger)
+	apiServer.EnableDashboard(api.Dashboard{
+		Stats:             client,
+		Events:            feed,
+		ReplicationFactor: cfg.ReplicationFactor,
+		AnnounceInterval:  cfg.AnnounceInterval,
+		StartedAt:         startedAt,
+	})
+
 	// No ReadTimeout or WriteTimeout: they cap a whole request, and transferring
 	// a large object can legitimately take a long time.
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           api.NewServer(objects, members, store.Ping, logger).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

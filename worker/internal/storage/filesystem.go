@@ -36,15 +36,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 	created_at  INTEGER NOT NULL -- Unix time in nanoseconds, UTC
 );
 CREATE INDEX IF NOT EXISTS chunks_by_object ON chunks (object_id, sequence_no);
-CREATE TABLE IF NOT EXISTS worker_identity (
-	id        INTEGER PRIMARY KEY CHECK (id = 1),
-	worker_id TEXT    NOT NULL
-);
 `
-
-// schemaVersion is stored in PRAGMA user_version. Version 1 (phase 1-2)
-// stored a checksum per chunk; version 2 doesn't.
-const schemaVersion = 2
 
 // Filesystem is the worker's persistent Storage. Chunk data lives in files
 // under <dataDir>/chunks and the ChunkMetadata table lives in SQLite at
@@ -98,9 +90,9 @@ func NewFilesystem(ctx context.Context, dataDir string, log *slog.Logger) (*File
 		return nil, fmt.Errorf("open metadata db: %w", err)
 	}
 	f := &Filesystem{dataDir: abs, db: db, log: log}
-	if err := f.migrate(ctx); err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("create metadata schema: %w", err)
 	}
 	if err := f.reconcile(ctx); err != nil {
 		db.Close()
@@ -123,34 +115,6 @@ func dsn(dbPath string) string {
 	return u.String()
 }
 
-// migrate creates the schema. A database written by an older version is
-// rejected rather than silently mixed with the new layout.
-func (f *Filesystem) migrate(ctx context.Context) error {
-	var version int
-	if err := f.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if version != 0 && version != schemaVersion {
-		return fmt.Errorf("metadata db in %s has schema version %d, want %d: remove the worker volume to start fresh", f.dataDir, version, schemaVersion)
-	}
-	if version == 0 {
-		var tables int
-		if err := f.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'chunks'`).Scan(&tables); err != nil {
-			return fmt.Errorf("inspect metadata db: %w", err)
-		}
-		if tables > 0 {
-			return fmt.Errorf("metadata db in %s was written by an older worker version: remove the worker volume to start fresh", f.dataDir)
-		}
-	}
-	if _, err := f.db.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("create metadata schema: %w", err)
-	}
-	if _, err := f.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
-		return fmt.Errorf("set schema version: %w", err)
-	}
-	return nil
-}
-
 // Close closes the metadata database.
 func (f *Filesystem) Close() error {
 	return f.db.Close()
@@ -159,31 +123,6 @@ func (f *Filesystem) Close() error {
 // Ping reports whether the metadata database is usable.
 func (f *Filesystem) Ping(ctx context.Context) error {
 	return f.db.PingContext(ctx)
-}
-
-// LoadWorkerID returns the worker ID the controller assigned on an earlier
-// registration, or "" if the worker has never registered.
-func (f *Filesystem) LoadWorkerID(ctx context.Context) (string, error) {
-	var id string
-	err := f.db.QueryRowContext(ctx, `SELECT worker_id FROM worker_identity WHERE id = 1`).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("load worker id: %w", err)
-	}
-	return id, nil
-}
-
-// SaveWorkerID durably records the worker ID assigned by the controller.
-func (f *Filesystem) SaveWorkerID(ctx context.Context, id string) error {
-	_, err := f.db.ExecContext(ctx, `
-		INSERT INTO worker_identity (id, worker_id) VALUES (1, ?)
-		ON CONFLICT (id) DO UPDATE SET worker_id = excluded.worker_id`, id)
-	if err != nil {
-		return fmt.Errorf("save worker id: %w", err)
-	}
-	return nil
 }
 
 // Put writes the chunk data durably, then registers its metadata row.

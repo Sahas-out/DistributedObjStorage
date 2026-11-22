@@ -37,7 +37,7 @@ services:
       CONTROLLER_URL: http://controller:8080
       ANNOUNCE_INTERVAL: 30s
       # All workers share one volume. Each claims its own slot-<n> directory
-      # under DATA_ROOT and keeps its chunks and worker ID there, so data
+      # under DATA_ROOT and keeps its chunks there, so data
       # survives restarts, `down`/`up` and re-scaling.
       DATA_ROOT: /data
     # Host ports for direct debugging (Postman worker collection); see the

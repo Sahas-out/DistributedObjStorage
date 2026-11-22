@@ -6,8 +6,7 @@
 // directory (slot-0, slot-1, ...) by holding an exclusive lock on the
 // directory's lock file for as long as the process runs. The kernel releases
 // the lock when the process exits, however it exits, so a restarted or newly
-// scaled worker picks up a free slot together with the chunks and worker ID
-// stored in it.
+// scaled worker picks up a free slot together with the chunks stored in it.
 package slot
 
 import (
@@ -45,7 +44,7 @@ func (s *Slot) Release() error {
 
 // Claim locks the lowest-numbered free slot under root, creating it if
 // needed. Lower slots are preferred so a worker that restarts usually gets
-// its old slot back, and with it its chunks and worker ID.
+// its old slot back, and with it its chunks.
 func Claim(root string) (*Slot, error) {
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, fmt.Errorf("create data root: %w", err)

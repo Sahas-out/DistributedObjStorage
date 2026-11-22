@@ -2,11 +2,8 @@ package metadata
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -141,21 +138,5 @@ func TestListAndDelete(t *testing.T) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM object_chunks WHERE object_id = 'a'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("object_chunks rows for deleted object = %d, %v", n, err)
-	}
-}
-
-func TestOpenRejectsPhase2Schema(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", dsn(filepath.Join(dir, dbFileName)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE objects (object_id TEXT PRIMARY KEY)`); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	if _, err := Open(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "schema version 2") {
-		t.Fatalf("Open on phase 2 db: error = %v, want schema version error", err)
 	}
 }

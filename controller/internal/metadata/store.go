@@ -41,10 +41,6 @@ CREATE TABLE IF NOT EXISTS object_chunks (
 );
 `
 
-// schemaVersion is stored in PRAGMA user_version. Phase 2 databases (no
-// version) stored a chunk_id per chunk and are rejected.
-const schemaVersion = 3
-
 // ErrNotFound is returned when an object has no metadata.
 var ErrNotFound = errors.New("object not found")
 
@@ -85,39 +81,11 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open metadata db: %w", err)
 	}
-	if err := migrate(ctx, db, abs); err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("create metadata schema: %w", err)
 	}
 	return &Store{db: db}, nil
-}
-
-// migrate creates the schema. A database from an older version is rejected
-// with a clear message instead of failing later on an insert.
-func migrate(ctx context.Context, db *sql.DB, dir string) error {
-	var version int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if version == 0 {
-		var tables int
-		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'objects'`).Scan(&tables); err != nil {
-			return fmt.Errorf("inspect metadata db: %w", err)
-		}
-		if tables > 0 {
-			version = 2 // created by phase 2, which didn't set user_version
-		}
-	}
-	if version != 0 && version != schemaVersion {
-		return fmt.Errorf("metadata db in %s has schema version %d, want %d: remove the controller volume (docker compose down -v) to start fresh", dir, version, schemaVersion)
-	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("create metadata schema: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
-		return fmt.Errorf("set schema version: %w", err)
-	}
-	return nil
 }
 
 // dsn builds the SQLite connection string. synchronous=FULL makes a commit

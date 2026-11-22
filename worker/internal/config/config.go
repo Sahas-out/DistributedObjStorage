@@ -15,8 +15,8 @@ const DefaultMaxChunkBytes int64 = 1 << 20
 
 // Config holds worker settings.
 //
-// The worker has no configured ID: the controller assigns one at the first
-// registration and the worker keeps it in its data directory.
+// The worker has no configured ID: the controller assigns one when the
+// worker registers, and the worker keeps it in memory.
 type Config struct {
 	Port          int    // PORT, default 8080
 	DataDir       string // DATA_DIR, default /data; used when DataRoot is empty

@@ -14,30 +14,6 @@ import (
 	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
 )
 
-type memStore struct {
-	mu sync.Mutex
-	id string
-}
-
-func (m *memStore) LoadWorkerID(context.Context) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.id, nil
-}
-
-func (m *memStore) SaveWorkerID(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.id = id
-	return nil
-}
-
-func (m *memStore) get() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.id
-}
-
 // fakeController records register requests. failFirst requests answer 503;
 // after retireAfter successful ones (if > 0) it answers 410 worker_retired.
 type fakeController struct {
@@ -85,19 +61,15 @@ func (f *fakeController) snapshot() []protocol.RegisterRequest {
 	return append([]protocol.RegisterRequest(nil), f.requests...)
 }
 
-func newAnnouncer(t *testing.T, url string, store IdentityStore) *Announcer {
+func newAnnouncer(t *testing.T, url string) *Announcer {
 	t.Helper()
-	a, err := New(context.Background(), Config{
+	return New(Config{
 		ControllerURL: url,
 		Port:          8080,
 		Interval:      20 * time.Millisecond,
 		RetryMin:      5 * time.Millisecond,
 		RetryMax:      10 * time.Millisecond,
-	}, store, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
+	}, nil)
 }
 
 func waitFor(t *testing.T, cond func() bool) {
@@ -115,8 +87,7 @@ func TestRegistersRetriesAndKeepsAnnouncing(t *testing.T) {
 	fc := &fakeController{failFirst: 2}
 	srv := httptest.NewServer(fc)
 	defer srv.Close()
-	store := &memStore{}
-	a := newAnnouncer(t, srv.URL, store)
+	a := newAnnouncer(t, srv.URL)
 	if a.WorkerID() != "" {
 		t.Fatalf("fresh worker has id %q", a.WorkerID())
 	}
@@ -132,8 +103,8 @@ func TestRegistersRetriesAndKeepsAnnouncing(t *testing.T) {
 		t.Fatalf("Run returned %v, want context.Canceled", err)
 	}
 
-	if a.WorkerID() != "assigned-1" || store.get() != "assigned-1" {
-		t.Fatalf("worker id = %q, stored %q; want assigned-1", a.WorkerID(), store.get())
+	if a.WorkerID() != "assigned-1" {
+		t.Fatalf("worker id = %q, want assigned-1", a.WorkerID())
 	}
 	reqs := fc.snapshot()
 	for i, r := range reqs {
@@ -147,29 +118,11 @@ func TestRegistersRetriesAndKeepsAnnouncing(t *testing.T) {
 	}
 }
 
-func TestSendsStoredID(t *testing.T) {
-	fc := &fakeController{}
-	srv := httptest.NewServer(fc)
-	defer srv.Close()
-	a := newAnnouncer(t, srv.URL, &memStore{id: "existing"})
-	if a.WorkerID() != "existing" {
-		t.Fatalf("WorkerID = %q before registering; want the stored id", a.WorkerID())
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go a.Run(ctx) //nolint:errcheck
-	waitFor(t, func() bool { return fc.ok.Load() >= 1 })
-	if got := fc.snapshot()[0].WorkerID; got != "existing" {
-		t.Fatalf("first request sent worker_id %q, want existing", got)
-	}
-}
-
 func TestStopsWhenRetired(t *testing.T) {
 	fc := &fakeController{retireAfter: 1}
 	srv := httptest.NewServer(fc)
 	defer srv.Close()
-	a := newAnnouncer(t, srv.URL, &memStore{})
+	a := newAnnouncer(t, srv.URL)
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run(context.Background()) }()

@@ -48,7 +48,7 @@ func run(logger *slog.Logger) error {
 		logger.Info("claimed data slot", "slot", s.Index, "data_dir", dataDir)
 	}
 
-	// Chunk files, the chunk table and the worker's ID live in dataDir.
+	// Chunk files and the chunk table live in dataDir.
 	// Opening the store also reconciles files with metadata left by a
 	// previous run, so it finishes before the server starts listening.
 	store, err := storage.NewFilesystem(context.Background(), dataDir, logger)
@@ -61,14 +61,11 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	announcer, err := registration.New(context.Background(), registration.Config{
+	announcer := registration.New(registration.Config{
 		ControllerURL: cfg.ControllerURL,
 		Port:          cfg.Port,
 		Interval:      cfg.AnnounceInterval,
-	}, store, logger)
-	if err != nil {
-		return fmt.Errorf("set up registration: %w", err)
-	}
+	}, logger)
 
 	srv := &http.Server{
 		Handler:           api.NewServer(store, store.Ping, announcer.WorkerID, cfg.MaxChunkBytes, logger).Handler(),
@@ -90,7 +87,7 @@ func run(logger *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("worker listening", "addr", ln.Addr().String(), "data_dir", dataDir,
-			"max_chunk_bytes", cfg.MaxChunkBytes, "worker_id", announcer.WorkerID(), "controller_url", cfg.ControllerURL)
+			"max_chunk_bytes", cfg.MaxChunkBytes, "controller_url", cfg.ControllerURL)
 		errCh <- srv.Serve(ln)
 	}()
 

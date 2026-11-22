@@ -19,6 +19,7 @@ import (
 
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/chunk"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/events"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/metadata"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/workers"
 	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
@@ -77,6 +78,7 @@ type Service struct {
 	rf        int
 	chunkSize int
 	log       *slog.Logger
+	events    *events.Log
 }
 
 // NewService builds a Service that splits objects into chunkSize pieces and
@@ -87,6 +89,10 @@ func NewService(chunks ChunkStore, meta MetadataStore, c Cluster, rf, chunkSize 
 	}
 	return &Service{chunks: chunks, meta: meta, cluster: c, rf: rf, chunkSize: chunkSize, log: log}
 }
+
+// SetEvents makes object operations appear in the dashboard activity feed.
+// Call it before serving requests.
+func (s *Service) SetEvents(ev *events.Log) { s.events = ev }
 
 // Upload stores src chunk by chunk, holding one chunk in memory at a time.
 // Each chunk is written to rf workers in parallel, each copy under its own
@@ -104,6 +110,7 @@ func (s *Service) Upload(ctx context.Context, src io.Reader) (_ metadata.Object,
 	var placed []cluster.Location
 	defer func() {
 		if err != nil {
+			s.events.Record(protocol.EventUploadFailed, events.Warn, "upload failed: "+err.Error(), "", "")
 			s.discard(ctx, objectID, placed)
 		}
 	}()
@@ -150,6 +157,8 @@ func (s *Service) Upload(ctx context.Context, src io.Reader) (_ metadata.Object,
 	for _, l := range placed {
 		s.cluster.SetStatus(l.ChunkID, cluster.ReplicaActive)
 	}
+	s.events.Record(protocol.EventObjectUploaded, events.Info,
+		fmt.Sprintf("object uploaded: %d bytes in %d chunks, %d copies", obj.Size, obj.ChunkCount, len(placed)), objectID, "")
 	return obj, nil
 }
 
@@ -196,6 +205,8 @@ func (s *Service) removeReplicas(ctx context.Context, objectID string, locs []cl
 				s.cluster.SetStatus(l.ChunkID, cluster.ReplicaOrphan)
 				s.log.Warn("could not remove chunk replica; marked orphan",
 					"object_id", objectID, "chunk_id", l.ChunkID, "worker_id", l.WorkerID, "error", err)
+				s.events.Record(protocol.EventReplicaOrphaned, events.Warn,
+					"could not remove chunk "+l.ChunkID+"; marked orphan", objectID, l.WorkerID)
 				return
 			}
 			s.cluster.Remove(l.ChunkID)
@@ -234,7 +245,10 @@ func (s *Service) Delete(ctx context.Context, objectID string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	s.removeReplicas(ctx, objectID, s.cluster.ObjectReplicas(objectID))
+	locs := s.cluster.ObjectReplicas(objectID)
+	s.removeReplicas(ctx, objectID, locs)
+	s.events.Record(protocol.EventObjectDeleted, events.Info,
+		fmt.Sprintf("object deleted (%d copies removed)", len(locs)), objectID, "")
 	return nil
 }
 
@@ -318,9 +332,13 @@ func (s *Service) fetchChunk(ctx context.Context, objectID string, ref metadata.
 			s.cluster.SetStatus(l.ChunkID, cluster.ReplicaCorrupted)
 			s.log.Warn("corrupted replica detected; trying another copy",
 				"object_id", objectID, "sequence_no", ref.SequenceNo, "chunk_id", l.ChunkID, "worker_id", l.WorkerID, "error", err)
+			s.events.Record(protocol.EventReplicaCorrupted, events.Error,
+				fmt.Sprintf("corrupted copy of chunk %d detected; marked CORRUPTED, served from another copy", ref.SequenceNo), objectID, l.WorkerID)
 		case errors.Is(err, workers.ErrChunkNotFound):
 			s.log.Warn("replica missing on worker; trying another copy",
 				"object_id", objectID, "sequence_no", ref.SequenceNo, "chunk_id", l.ChunkID, "worker_id", l.WorkerID)
+			s.events.Record(protocol.EventReplicaMissing, events.Warn,
+				fmt.Sprintf("copy of chunk %d missing on worker", ref.SequenceNo), objectID, l.WorkerID)
 		default:
 			allDamaged = false
 			failed[l.WorkerID] = true

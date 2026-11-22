@@ -206,3 +206,33 @@ func drainAndClose(body io.ReadCloser) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(body, 64<<10))
 	_ = body.Close()
 }
+
+// maxStatsResponseBytes bounds a stats response.
+const maxStatsResponseBytes = 64 << 10
+
+// Stats returns the traffic and storage counters of the worker at addr
+// (GET /dashboard/stats). Used by the dashboard only.
+func (c *Client) Stats(ctx context.Context, addr string) (protocol.WorkerStats, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, strings.TrimRight(addr, "/")+"/dashboard/stats", nil)
+	if err != nil {
+		return protocol.WorkerStats{}, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return protocol.WorkerStats{}, ctx.Err()
+		}
+		return protocol.WorkerStats{}, fmt.Errorf("%w: stats: %v", ErrUnavailable, err)
+	}
+	defer drainAndClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return protocol.WorkerStats{}, fmt.Errorf("%w: stats: worker returned %d", ErrUnavailable, resp.StatusCode)
+	}
+	var out protocol.WorkerStats
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxStatsResponseBytes)).Decode(&out); err != nil {
+		return protocol.WorkerStats{}, fmt.Errorf("%w: stats: decode response: %v", ErrUnavailable, err)
+	}
+	return out, nil
+}

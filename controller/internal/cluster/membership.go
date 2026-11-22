@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/events"
 	"github.com/Sahas-out/DistributedObjectStorage/pkg/protocol"
 )
 
@@ -41,6 +42,7 @@ type Membership struct {
 	interval time.Duration
 	timeout  time.Duration
 	log      *slog.Logger
+	events   *events.Log
 
 	ctx    context.Context // cancelled by Close; parent of every sync
 	cancel context.CancelFunc
@@ -61,6 +63,10 @@ func NewMembership(reg *Registry, lister ChunkLister, index ChunkIndex, interval
 		ctx: ctx, cancel: cancel,
 	}
 }
+
+// SetEvents makes membership changes appear in the dashboard activity feed.
+// Call it before serving requests.
+func (m *Membership) SetEvents(ev *events.Log) { m.events = ev }
 
 // Close stops running chunk-list syncs and waits for them.
 func (m *Membership) Close() {
@@ -98,11 +104,20 @@ func (m *Membership) Register(req protocol.RegisterRequest, remoteIP string) (pr
 	if err != nil {
 		return protocol.RegisterResponse{}, err
 	}
+	if len(res.Replaced) > 0 {
+		m.log.Info("removed workers whose address was taken by a new registration", "worker_id", id, "addr", addr, "removed", res.Replaced)
+		for _, old := range res.Replaced {
+			m.events.Record(protocol.EventWorkerReplaced, events.Info,
+				fmt.Sprintf("worker %s removed: its address %s now belongs to %s", old, addr, id), "", old)
+		}
+	}
 	switch {
 	case res.New:
 		m.log.Info("worker registered", "worker_id", id, "addr", addr)
+		m.events.Record(protocol.EventWorkerRegistered, events.Info, "worker registered at "+addr, "", id)
 	case res.Moved:
 		m.log.Info("worker re-registered at a new address; reloading its chunks", "worker_id", id, "addr", addr)
+		m.events.Record(protocol.EventWorkerMoved, events.Warn, "worker moved to "+addr+"; reloading its chunks", "", id)
 	}
 	if res.SyncGen != 0 {
 		m.wg.Add(1)
@@ -123,6 +138,7 @@ func (m *Membership) Deregister(id string) error {
 		return err
 	}
 	m.log.Info("worker deregistered", "worker_id", id)
+	m.events.Record(protocol.EventWorkerDeregistered, events.Info, "worker deregistered voluntarily", "", id)
 	return nil
 }
 
@@ -137,6 +153,7 @@ func (m *Membership) sync(id, addr string, gen uint64) {
 	if err != nil {
 		m.reg.FailSync(id, gen)
 		m.log.Warn("could not load worker chunk list; will retry on next announce", "worker_id", id, "addr", addr, "error", err)
+		m.events.Record(protocol.EventWorkerSyncFailed, events.Warn, "could not load chunk list; will retry on next announce", "", id)
 		return
 	}
 	replicas := make([]Replica, 0, len(reported))
@@ -156,16 +173,18 @@ func (m *Membership) sync(id, addr string, gen uint64) {
 		replicas = append(replicas, Replica{ChunkID: c.ChunkID, ObjectID: c.ObjectID, SeqNo: c.SequenceNo, Status: status})
 	}
 
-	ok, conflicts := m.reg.CompleteSync(id, gen, replicas)
+	ok, takenOver := m.reg.CompleteSync(id, gen, replicas)
 	if !ok {
 		m.log.Info("discarding stale chunk list; worker left or moved during the sync", "worker_id", id)
 		return
 	}
-	if len(conflicts) > 0 {
-		m.log.Warn("worker reported chunk ids already registered on another worker; ignored",
-			"worker_id", id, "chunk_ids", conflicts)
+	if len(takenOver) > 0 {
+		m.log.Warn("worker reported chunks registered to another worker; reassigned to the reporting worker",
+			"worker_id", id, "chunks", len(takenOver))
 	}
 	m.log.Info("worker ready", "worker_id", id, "addr", addr, "chunks", len(replicas), "orphans", orphans)
+	m.events.Record(protocol.EventWorkerReady, events.Info,
+		fmt.Sprintf("worker ready with %d chunks (%d orphans)", len(replicas), orphans), "", id)
 }
 
 func newWorkerID() (string, error) {

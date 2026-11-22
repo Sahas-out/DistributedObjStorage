@@ -2,10 +2,10 @@
 //
 // The worker calls POST /internal/workers/register at startup and then again
 // every announce interval. The first call has no worker ID; the controller
-// assigns one, which the worker stores and sends on every later call. The
-// periodic call lets a restarted controller (whose worker registry lives in
-// memory) rediscover its workers, and it is where failure detection will hook
-// in later.
+// assigns one, which the worker keeps in memory and sends on every later
+// call. The ID only lives as long as the process: a restarted worker
+// registers again and gets a new ID. The periodic call is the worker's
+// heartbeat, which the controller will use to detect failed workers.
 //
 // The register call carries no chunk list: once a worker is registered, the
 // controller pulls the list from GET /internals/chunks/metadata.
@@ -33,12 +33,6 @@ const RegisterPath = "/internal/workers/register"
 // accept it back.
 var ErrRetired = errors.New("worker was deregistered by the controller")
 
-// IdentityStore persists the worker ID assigned by the controller.
-type IdentityStore interface {
-	LoadWorkerID(ctx context.Context) (string, error)
-	SaveWorkerID(ctx context.Context, id string) error
-}
-
 // Config configures an Announcer.
 type Config struct {
 	ControllerURL string        // base URL, e.g. http://controller:8080
@@ -52,19 +46,16 @@ type Config struct {
 
 // Announcer registers the worker and re-announces it periodically.
 type Announcer struct {
-	cfg   Config
-	store IdentityStore
-	http  *http.Client
-	log   *slog.Logger
+	cfg  Config
+	http *http.Client
+	log  *slog.Logger
 
 	mu       sync.RWMutex
 	workerID string
 }
 
-// New builds an Announcer. It loads the stored worker ID, if any, so
-// WorkerID is correct before the first registration. A nil logger discards
-// logs.
-func New(ctx context.Context, cfg Config, store IdentityStore, log *slog.Logger) (*Announcer, error) {
+// New builds an Announcer. A nil logger discards logs.
+func New(cfg Config, log *slog.Logger) *Announcer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -80,15 +71,11 @@ func New(ctx context.Context, cfg Config, store IdentityStore, log *slog.Logger)
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = 10 * time.Second
 	}
-	id, err := store.LoadWorkerID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &Announcer{cfg: cfg, store: store, http: &http.Client{}, log: log, workerID: id}, nil
+	return &Announcer{cfg: cfg, http: &http.Client{}, log: log}
 }
 
 // WorkerID returns the controller-assigned ID, or "" before the first
-// successful registration of a brand-new worker.
+// successful registration.
 func (a *Announcer) WorkerID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -112,7 +99,7 @@ func (a *Announcer) Run(ctx context.Context) error {
 			failing = false
 			backoff = a.cfg.RetryMin
 		case errors.Is(err, ErrRetired):
-			a.log.Warn("worker was deregistered; no longer announcing. Restart with an empty data directory to rejoin as a new worker",
+			a.log.Warn("worker was deregistered; no longer announcing. Restart the worker to rejoin as a new worker",
 				"worker_id", a.WorkerID())
 			return err
 		case ctx.Err() != nil:
@@ -140,7 +127,7 @@ func (a *Announcer) Run(ctx context.Context) error {
 	}
 }
 
-// announce sends one registration and stores the ID the controller returns.
+// announce sends one registration and keeps the ID the controller returns.
 func (a *Announcer) announce(ctx context.Context) error {
 	current := a.WorkerID()
 	body, err := json.Marshal(protocol.RegisterRequest{WorkerID: current, Port: a.cfg.Port})
@@ -180,11 +167,6 @@ func (a *Announcer) announce(ctx context.Context) error {
 		return errors.New("register: controller returned an empty worker id")
 	}
 	if out.WorkerID != current {
-		// Saved before it is used, so a crash can't leave the worker known to
-		// the controller under an ID it has forgotten.
-		if err := a.store.SaveWorkerID(ctx, out.WorkerID); err != nil {
-			return err
-		}
 		a.mu.Lock()
 		a.workerID = out.WorkerID
 		a.mu.Unlock()

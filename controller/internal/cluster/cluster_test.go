@@ -171,12 +171,10 @@ func TestAnnounceLifecycle(t *testing.T) {
 	}
 }
 
-func TestCompleteSyncKeepsExistingEntries(t *testing.T) {
+func TestCompleteSyncTakesOverChunksOfOtherWorkers(t *testing.T) {
 	r := readyRegistry(t, 2)
 	locs, _ := r.Place("obj", 0, 2, seqIDs()) // PENDING on w0 and w1
 
-	// w1 moves and reports its chunks, including the pending one and one
-	// whose ID is registered on w0.
 	var onW0, onW1 string
 	for _, l := range locs {
 		if l.WorkerID == "w0" {
@@ -185,20 +183,47 @@ func TestCompleteSyncKeepsExistingEntries(t *testing.T) {
 			onW1 = l.ChunkID
 		}
 	}
+	// w1 moves (which drops its entries) and reports its own chunk, a chunk
+	// registered to w0 (as if w0's files now sat on w1's disk) and an
+	// unknown chunk.
 	res, _ := r.Announce("w1", "http://new:1")
-	ok, conflicts := r.CompleteSync("w1", res.SyncGen, []Replica{
+	ok, takenOver := r.CompleteSync("w1", res.SyncGen, []Replica{
 		{ChunkID: onW0, ObjectID: "obj", SeqNo: 0, Status: ReplicaActive},
 		{ChunkID: onW1, ObjectID: "obj", SeqNo: 0, Status: ReplicaActive},
 		{ChunkID: "x", ObjectID: "gone", SeqNo: 3, Status: ReplicaOrphan},
 	})
-	if !ok || len(conflicts) != 1 || conflicts[0] != onW0 {
-		t.Fatalf("CompleteSync = %v, conflicts %v", ok, conflicts)
+	if !ok || len(takenOver) != 1 || takenOver[0] != onW0 {
+		t.Fatalf("CompleteSync = %v, taken over %v", ok, takenOver)
 	}
-	if w, _ := r.Worker("w1"); w.ChunkCount != 2 {
-		t.Fatalf("w1 count = %d, want 2", w.ChunkCount)
+	counts := counts(r)
+	if counts["w0"] != 0 || counts["w1"] != 3 {
+		t.Fatalf("counts = %v; want w0 0, w1 3", counts)
+	}
+	for _, l := range r.ObjectReplicas("obj") {
+		if l.WorkerID != "w1" || l.Status != ReplicaActive {
+			t.Fatalf("replica = %+v; want ACTIVE on w1", l)
+		}
 	}
 	if got := r.ObjectReplicas("gone"); len(got) != 1 || got[0].Status != ReplicaOrphan {
 		t.Fatalf("orphan replica = %+v", got)
+	}
+}
+
+func TestNewWorkerReplacesDeadWorkerAtSameAddress(t *testing.T) {
+	r := readyRegistry(t, 2) // w0 at 10.0.0.0, w1 at 10.0.0.1
+	if _, err := r.Place("obj", 0, 2, seqIDs()); err != nil {
+		t.Fatal(err)
+	}
+	// w0's process restarts and registers under a new ID at the same address.
+	res, err := r.Announce("w0-new", "http://10.0.0.0:8080")
+	if err != nil || !res.New || len(res.Replaced) != 1 || res.Replaced[0] != "w0" {
+		t.Fatalf("announce = %+v, %v", res, err)
+	}
+	if _, ok := r.Worker("w0"); ok {
+		t.Fatal("dead worker w0 is still registered")
+	}
+	if got := r.ObjectReplicas("obj"); len(got) != 1 || got[0].WorkerID != "w1" {
+		t.Fatalf("replicas = %+v; w0's entries should be gone until w0-new reports them", got)
 	}
 }
 
@@ -307,7 +332,7 @@ func TestRegisterLoadsChunkListAndClassifiesOrphans(t *testing.T) {
 		}
 	}
 
-	// Re-announcing with the assigned ID keeps the same identity.
+	// Re-announcing with the assigned ID keeps the same ID.
 	again, err := m.Register(protocol.RegisterRequest{WorkerID: resp.WorkerID, Port: 8080}, "10.1.1.1")
 	if err != nil || again.WorkerID != resp.WorkerID || again.Status != string(WorkerReady) {
 		t.Fatalf("re-announce = %+v, %v", again, err)

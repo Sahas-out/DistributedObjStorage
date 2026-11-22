@@ -18,6 +18,7 @@ type Server struct {
 	workerID func() string
 	maxChunk int64
 	log      *slog.Logger
+	traffic  *traffic
 }
 
 // NewServer builds a Server. ping reports whether the metadata database is
@@ -28,7 +29,8 @@ func NewServer(store storage.Storage, ping func(context.Context) error, workerID
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(discard{}, nil))
 	}
-	return &Server{store: store, ping: ping, workerID: workerID, maxChunk: maxChunk, log: log}
+	return &Server{store: store, ping: ping, workerID: workerID, maxChunk: maxChunk, log: log,
+		traffic: &traffic{startedAt: time.Now()}}
 }
 
 // Handler returns the HTTP handler with all routes and middleware.
@@ -42,7 +44,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /internals/chunks/{chunk_id}", s.handleDeleteChunk)
 	mux.HandleFunc("GET /internals/chunks/metadata", s.handleListChunks)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	return s.recoverPanics(s.logRequests(mux))
+	// Read-only counters for the controller's dashboard. Workers are only
+	// reachable inside the cluster network; the GUI gets these through the
+	// controller's /dashboard/overview.
+	mux.HandleFunc("GET /dashboard/stats", s.handleStats)
+	return s.recoverPanics(s.logRequests(s.traffic.countTraffic(mux)))
 }
 
 // statusRecorder captures the status code and bytes written for logging.

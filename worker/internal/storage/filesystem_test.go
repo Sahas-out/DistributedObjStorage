@@ -462,37 +462,3 @@ func TestPing(t *testing.T) {
 		t.Fatal("Ping after Close succeeded")
 	}
 }
-
-func TestWorkerIDPersistsAcrossReopen(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	f := newStore(t, dir)
-	if id, err := f.LoadWorkerID(ctx); err != nil || id != "" {
-		t.Fatalf("LoadWorkerID on fresh store = %q, %v; want empty", id, err)
-	}
-	if err := f.SaveWorkerID(ctx, "first"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.SaveWorkerID(ctx, "second"); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-
-	g := newStore(t, dir)
-	if id, err := g.LoadWorkerID(ctx); err != nil || id != "second" {
-		t.Fatalf("LoadWorkerID after reopen = %q, %v; want second", id, err)
-	}
-}
-
-func TestRejectsOldSchema(t *testing.T) {
-	dir := t.TempDir()
-	f := newStore(t, dir)
-	// Simulate a phase 2 database: a chunks table but no schema version.
-	if _, err := f.db.Exec(`PRAGMA user_version = 0`); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	if _, err := NewFilesystem(context.Background(), dir, nil); err == nil || !strings.Contains(err.Error(), "older worker version") {
-		t.Fatalf("NewFilesystem on old schema: err = %v, want older-version error", err)
-	}
-}

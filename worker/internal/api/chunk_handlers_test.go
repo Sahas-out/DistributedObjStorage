@@ -641,12 +641,6 @@ func TestRouting(t *testing.T) {
 	if rec := do(t, h, http.MethodGet, "/nope", nil, nil); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown route: status = %d, want 404", rec.Code)
 	}
-	// Old routes are gone.
-	for _, p := range []string{"/internal/chunks/c1", "/internal/workers/w/chunks"} {
-		if rec := do(t, h, http.MethodGet, p, nil, nil); rec.Code != http.StatusNotFound {
-			t.Errorf("GET %s: status = %d, want 404", p, rec.Code)
-		}
-	}
 }
 
 func TestPanicRecovery(t *testing.T) {

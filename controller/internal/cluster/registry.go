@@ -1,11 +1,11 @@
 // Package cluster holds the controller's runtime view of the cluster: which
 // workers exist and where every chunk replica lives.
 //
-// None of this is persisted. Worker addresses change when containers restart,
-// and replicas can be lost or corrupted, so storing them would only record
-// stale facts. Instead the view is rebuilt from the workers themselves: each
-// worker registers (and keeps re-announcing), and the controller pulls its
-// chunk list.
+// None of this is persisted. Worker IDs and addresses only last as long as a
+// worker process, and replicas can be lost or corrupted, so storing them
+// would only record stale facts. Instead the view is built from the workers
+// themselves: each worker registers (and keeps re-announcing as a heartbeat),
+// and the controller pulls its chunk list.
 //
 // The Registry holds two tables behind one lock so they always agree:
 //
@@ -130,6 +130,10 @@ type AnnounceResult struct {
 	Worker Worker
 	New    bool // the worker wasn't known before
 	Moved  bool // the worker came back at a different address
+	// Replaced lists workers removed because this worker now uses their
+	// address: a restarted worker registers under a new ID, and only one
+	// process can listen on an address, so the old entry is dead.
+	Replaced []string
 	// SyncGen is non-zero when the caller must load the worker's chunk list
 	// and then call CompleteSync or FailSync with it.
 	SyncGen uint64
@@ -138,6 +142,7 @@ type AnnounceResult struct {
 // Announce records that worker id is alive at addr.
 //
 //   - Unknown worker: added as AVAILABLE; a chunk-list sync is requested.
+//     Any other worker registered at the same address is removed first.
 //   - Known worker at the same address: only LastSeen changes, unless it is
 //     still AVAILABLE with no sync running (an earlier sync failed), in which
 //     case a sync is requested again.
@@ -151,6 +156,16 @@ func (r *Registry) Announce(id, addr string) (AnnounceResult, error) {
 	}
 	var res AnnounceResult
 	w, ok := r.workers[id]
+	if !ok || w.Addr != addr {
+		for otherID, other := range r.workers {
+			if otherID != id && other.Addr == addr {
+				r.dropReplicasLocked(otherID)
+				delete(r.byWorker, otherID)
+				delete(r.workers, otherID)
+				res.Replaced = append(res.Replaced, otherID)
+			}
+		}
+	}
 	switch {
 	case !ok:
 		r.nextGen++
@@ -176,9 +191,12 @@ func (r *Registry) Announce(id, addr string) (AnnounceResult, error) {
 // CompleteSync adds the replicas reported by worker id and marks it READY.
 // It returns false, changing nothing, if the worker is gone or moved since
 // the sync started. A reported chunk already in the table on the same worker
-// keeps its current entry (it may be PENDING from an upload in progress); one
-// registered on a different worker is skipped and returned as a conflict.
-func (r *Registry) CompleteSync(id string, gen uint64, reported []Replica) (ok bool, conflicts []string) {
+// keeps its current entry (it may be PENDING from an upload in progress).
+// One registered on a different worker is taken over by the reporting
+// worker, because the chunk's file is on its disk: this happens when a
+// worker restarts under a new ID at a new address while its old entry is
+// still listed. Taken-over chunk IDs are returned.
+func (r *Registry) CompleteSync(id string, gen uint64, reported []Replica) (ok bool, takenOver []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	w, exists := r.workers[id]
@@ -187,10 +205,11 @@ func (r *Registry) CompleteSync(id string, gen uint64, reported []Replica) (ok b
 	}
 	for _, rep := range reported {
 		if existing, dup := r.chunks[rep.ChunkID]; dup {
-			if existing.WorkerID != id {
-				conflicts = append(conflicts, rep.ChunkID)
+			if existing.WorkerID == id {
+				continue
 			}
-			continue
+			r.removeLocked(rep.ChunkID)
+			takenOver = append(takenOver, rep.ChunkID)
 		}
 		rep.WorkerID = id
 		r.addLocked(rep)
@@ -198,7 +217,7 @@ func (r *Registry) CompleteSync(id string, gen uint64, reported []Replica) (ok b
 	w.Status = WorkerReady
 	w.syncGen = 0
 	w.ChunkCount = len(r.byWorker[id])
-	return true, conflicts
+	return true, takenOver
 }
 
 // FailSync records that the sync for gen failed, so the next announcement

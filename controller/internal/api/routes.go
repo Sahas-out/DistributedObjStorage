@@ -19,6 +19,7 @@ type Server struct {
 	members *cluster.Membership
 	ping    func(context.Context) error
 	log     *slog.Logger
+	dash    *Dashboard // nil: /dashboard endpoints are off
 }
 
 // NewServer builds a Server. ping reports whether the metadata store is usable
@@ -46,6 +47,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /internal/workers", s.handleListWorkers)
 	mux.HandleFunc("DELETE /internal/workers/{worker_id}", s.handleDeregister)
 	mux.HandleFunc("GET /internal/objects/{object_id}/replicas", s.handleReplicas)
+
+	// Read-only views for the web GUI's dashboard.
+	if s.dash != nil {
+		mux.HandleFunc("GET /dashboard/overview", s.handleDashboardOverview)
+		mux.HandleFunc("GET /dashboard/events", s.handleDashboardEvents)
+		mux.HandleFunc("/dashboard/overview", methodNotAllowed(http.MethodGet+", "+http.MethodHead))
+		mux.HandleFunc("/dashboard/events", methodNotAllowed(http.MethodGet+", "+http.MethodHead))
+	}
 
 	// Catch-alls so these responses use the JSON error format too. More
 	// specific patterns above take priority.

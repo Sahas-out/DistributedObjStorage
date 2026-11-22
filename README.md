@@ -36,8 +36,6 @@ curl -s -o /dev/null -w "%{http_code}\n" -X DELETE localhost:8080/api/v1/objects
 docker compose down        # data survives; add -v to also delete the volumes
 ```
 
-> **Upgrading from Phase 2:** the controller's and the worker's database layouts changed, so old volumes aren't compatible. The controller refuses to start on a Phase 2 volume with a message that says so. Run `docker compose down -v` once to start fresh. (The old `worker1-data` volume is no longer used; delete it with `docker volume rm distributedobjectstorage_worker1-data`.)
-
 ### Demo: corrupted copy
 
 ```sh
@@ -56,10 +54,10 @@ Replicas are read in random order, so you may need a few downloads before the da
 
 The controller has no list of workers. Each worker knows `CONTROLLER_URL`. At startup, and then every `ANNOUNCE_INTERVAL` (30 s), it calls `POST /internal/workers/register` with `{"worker_id": "...", "port": 8080}`:
 
-1. **First time:** `worker_id` is empty. The controller assigns one (`w-<16 hex>`), and the worker stores it in its own database and sends it on every later call.
+1. **First time:** `worker_id` is empty. The controller assigns one (`w-<16 hex>`), and the worker keeps it in memory and sends it on every later call. The ID lasts only as long as the worker process: a restarted worker registers again and gets a new ID. If another worker entry still has the same address, that entry belongs to the dead process, so the controller replaces it. If the restarted worker reports chunks that are still listed under its old entry, those chunks move to the new ID, because the files are on its disk.
 2. **Address:** the controller takes the worker's address from the request's source IP (its container IP on the Docker network) plus the port. It calls each container directly, so Docker's service-name load balancing never applies.
 3. **Chunk report:** for a worker it doesn't know yet, the controller answers right away with status `AVAILABLE`. It then pulls the worker's chunk list from `GET /internals/chunks/metadata` in the background. Once that is loaded, the worker becomes `READY` and starts receiving new chunks.
-4. **Re-announcing:** for a known worker at the same address, an announcement only updates `last_seen`. The repeated call lets a restarted controller rebuild its view within one interval. Failure detection will use `last_seen` later.
+4. **Re-announcing:** for a known worker at the same address, an announcement only updates `last_seen`. This is the worker's heartbeat: worker-failure detection (next phase) will mark a worker that stops announcing as failed.
 
 `DELETE /internal/workers/{worker_id}` removes a worker that is leaving voluntarily. The controller forgets it and its copies and refuses the ID afterwards. The worker logs this and stops announcing itself. Stopping or scaling down a container does **not** deregister it.
 
@@ -68,7 +66,7 @@ The controller has no list of workers. Each worker knows `CONTROLLER_URL`. At st
 | Where | What | Why |
 |---|---|---|
 | SQLite (`DATA_DIR/metadata.db`) | `objects` (ID, size, checksum, chunk count, creation time) and `object_chunks` (object ID, sequence number, size, checksum) | These facts don't change while the object exists. The checksums let the controller verify any copy. |
-| Memory: worker table | worker ID → address, status (`AVAILABLE`/`READY`), chunk count, last seen | Addresses change when containers restart. Rebuilt from registrations. |
+| Memory: worker table | worker ID → address, status (`AVAILABLE`/`READY`), chunk count, last seen | IDs and addresses last only as long as a worker process. Built from registrations. |
 | Memory: chunk table | chunk ID → object ID, sequence number, worker ID, status | Copies can be lost or corrupted, so where they live is runtime state. Rebuilt from the workers' chunk reports. |
 
 Copy statuses in the chunk table:
@@ -98,8 +96,7 @@ For each chunk, the controller picks the 2 `READY` workers that hold the fewest 
 
 - Stopping or scaling down workers can leave objects with fewer than 2 copies. Nothing restores them yet.
 - A stopped worker stays listed as `READY` until failure detection exists. Downloads still work from the other copy: connecting to the stopped worker times out after 1 s, and that worker is tried last for the rest of the download. New uploads may still pick it and then fail with `503 worker_unavailable`.
-- Right after a controller restart, downloads return `503` until the workers re-announce, which takes up to 30 s.
-- Copies are marked `CORRUPTED` only in memory. After a controller restart, a damaged copy is detected again on its next read.
+- The project covers worker failures only. The controller is a single point of failure: its worker and chunk tables are in memory, so after a controller restart they are empty until each worker's next announcement (up to 30 s), and `CORRUPTED` marks are lost.
 
 ## Controller HTTP API
 
@@ -156,13 +153,12 @@ These endpoints are served on the same port as the client API, which is fine for
 
 ### Storage
 
-With `DATA_ROOT` set (as in `docker-compose.yml`), all workers share one volume. At startup each worker claims the lowest free `slot-<n>` directory by holding an exclusive lock on its `.lock` file. The kernel releases the lock when the worker exits, so a restarted or newly scaled worker picks up a free slot together with the chunks and worker ID stored in it. Without `DATA_ROOT`, the worker uses `DATA_DIR` directly.
+With `DATA_ROOT` set (as in `docker-compose.yml`), all workers share one volume. At startup each worker claims the lowest free `slot-<n>` directory by holding an exclusive lock on its `.lock` file. The kernel releases the lock when the worker exits, so a restarted or newly scaled worker picks up a free slot together with the chunks stored in it. Without `DATA_ROOT`, the worker uses `DATA_DIR` directly.
 
 ```text
 DATA_ROOT/slot-<n>/        (or DATA_DIR/)
 ├── .lock         held while a worker uses this slot
 ├── metadata.db   SQLite: chunks (chunk_id, object_id, sequence_no, file_path, size, created_at)
-│                 and worker_identity (the controller-assigned worker ID)
 ├── chunks/       chunk data, one file per chunk, named <chunk_id>.<random>
 └── tmp/          in-progress writes
 ```
@@ -182,7 +178,7 @@ The worker stores **no checksums**. It checks `X-Chunk-Checksum` on PUT to catch
 | `DATA_DIR` | `/data` | Data directory when `DATA_ROOT` is empty |
 | `MAX_CHUNK_BYTES` | `1048576` | Largest accepted chunk (1 MiB) |
 
-The worker ID is not configured. The controller assigns it at the first registration.
+The worker ID is not configured or stored. The controller assigns one each time the worker process starts and registers.
 
 ### Worker HTTP API
 
@@ -249,7 +245,7 @@ The `cmp` check needs `jq`. Chunks written this way don't belong to any object, 
 pkg/protocol/                   shared wire types, header names, error codes
 worker/cmd/worker/              worker entry point
 worker/internal/api/            HTTP routes, handlers, middleware
-worker/internal/storage/        Storage interface, filesystem + SQLite store, worker identity
+worker/internal/storage/        Storage interface, filesystem + SQLite store
 worker/internal/registration/   registers with the controller and re-announces
 worker/internal/slot/           claims a slot directory on a shared volume
 worker/internal/config/         environment-based configuration

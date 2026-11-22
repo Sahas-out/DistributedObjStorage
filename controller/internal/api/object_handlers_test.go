@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/cluster"
+	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/events"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/metadata"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/object"
 	"github.com/Sahas-out/DistributedObjectStorage/controller/internal/workers"
@@ -86,6 +87,7 @@ type testEnv struct {
 	srv    *httptest.Server
 	worker *stubWorker
 	reg    *cluster.Registry
+	stats  *stubStats
 }
 
 // newTestServer serves the API with workers ready workers and replication
@@ -114,9 +116,15 @@ func newTestServer(t *testing.T, ready ...int) testEnv {
 	members := cluster.NewMembership(reg, worker, store, 30*time.Second, time.Second, nil)
 	t.Cleanup(members.Close)
 	svc := object.NewService(worker, store, reg, 2, testChunkSize, nil)
-	srv := httptest.NewServer(NewServer(svc, members, store.Ping, nil).Handler())
+	feed := events.New(events.DefaultCapacity)
+	svc.SetEvents(feed)
+	members.SetEvents(feed)
+	stats := &stubStats{byAddr: map[string]protocol.WorkerStats{}}
+	api := NewServer(svc, members, store.Ping, nil)
+	api.EnableDashboard(Dashboard{Stats: stats, Events: feed, ReplicationFactor: 2, AnnounceInterval: 30 * time.Second, StartedAt: time.Now()})
+	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
-	return testEnv{srv: srv, worker: worker, reg: reg}
+	return testEnv{srv: srv, worker: worker, reg: reg, stats: stats}
 }
 
 func do(t *testing.T, method, url string, body io.Reader) *http.Response {
