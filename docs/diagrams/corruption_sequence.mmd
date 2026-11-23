@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant CT as Controller
+    participant RJ as Recovery goroutine
+    participant WB as Worker B<br/>(corrupted copy)
+    participant WA as Worker A<br/>(good copy)
+
+    Note over WB: bytes of a chunk file changed on disk (dd)
+
+    C->>CT: GET /api/v1/objects/{object_id}
+    CT->>WB: GET /internals/chunks/{chunk_id_B}
+    WB-->>CT: data, returned as stored
+    Note over CT: SHA-256 != stored checksum<br/>copy B -> CORRUPTED (never served again)
+    CT->>WA: GET /internals/chunks/{chunk_id_A}
+    WA-->>CT: data, checksum OK
+    CT-->>C: correct bytes
+
+    Note over RJ: next tick (at most 5 s later)
+    RJ->>WA: GET good copy, verify
+    RJ->>WB: PUT /internals/chunks/{chunk_id_B} (same worker, same ID)
+    Note over WB: new file written, row switched, old file removed
+    Note over RJ: copy B CORRUPTED -> ACTIVE
+
+    opt every copy of the chunk is corrupted
+        Note over RJ: chunk can't be restored: object deleted,<br/>GET now returns 404
+    end

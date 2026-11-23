@@ -1,0 +1,34 @@
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant CT as Controller
+    participant R as Registry<br/>(in memory)
+    participant DB as Controller SQLite
+    participant W1 as Worker A
+    participant W2 as Worker B
+
+    C->>CT: POST /api/v1/objects (multipart: file, metadata)
+    Note over CT: object_id = 32 random hex chars
+
+    loop for each 1 MiB chunk read from the request body
+        Note over CT: SHA-256 of the chunk
+        CT->>R: Place(object_id, seq, RF=2)
+        R-->>CT: 2 least-loaded READY workers,<br/>a new chunk_id per copy (status PENDING)
+        par in parallel
+            CT->>W1: PUT /internals/chunks/{chunk_id_A}<br/>X-Chunk-Checksum
+            Note over W1: verify checksum, write tmp/ + fsync,<br/>rename into chunks/, commit row
+            W1-->>CT: 201
+        and
+            CT->>W2: PUT /internals/chunks/{chunk_id_B}<br/>X-Chunk-Checksum
+            W2-->>CT: 201
+        end
+    end
+
+    CT->>DB: one transaction: objects + object_chunks<br/>+ object_custom_metadata
+    CT->>R: mark every copy ACTIVE
+    CT-->>C: 201 Created (ObjectInfo)
+
+    opt any failure (worker error, bad metadata, client disconnect)
+        CT->>W1: DELETE copies already sent (ORPHAN if delete fails)
+        CT-->>C: 400 / 503, no object created
+    end

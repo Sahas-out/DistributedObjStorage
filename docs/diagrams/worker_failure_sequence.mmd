@@ -1,0 +1,34 @@
+sequenceDiagram
+    autonumber
+    participant W2 as Worker 2
+    participant CT as Controller<br/>(HTTP + Registry)
+    participant RJ as Recovery goroutine<br/>(tick every 5 s)
+    participant W1 as Worker 1<br/>(holds other copy)
+    participant W3 as Worker 3<br/>(least loaded)
+
+    loop heartbeat every 10 s
+        W2->>CT: POST /internal/workers/register {worker_id}
+        Note over CT: last_seen = now
+    end
+
+    Note over W2: docker stop worker2
+    Note over CT: downloads still work: connecting to W2 fails after 1 s,<br/>the copy on W1 is served and W2 is tried last
+
+    RJ->>CT: detectFailures: now - last_seen > 30 s
+    Note over CT: W2 -> DEAD, its ACTIVE copies -> LOST
+
+    loop each chunk with fewer than 2 good copies
+        RJ->>W1: GET good copy, verify SHA-256
+        RJ->>CT: PlaceReplica: least-loaded READY worker not holding it
+        RJ->>W3: PUT /internals/chunks/{new chunk_id}
+        Note over RJ: new copy PENDING -> ACTIVE,<br/>LOST entries on W2 forgotten
+    end
+
+    Note over W2: docker start worker2 (new process)
+    W2->>CT: POST /internal/workers/register {worker_id: ""}
+    Note over CT: new ID, old DEAD entry at the same address removed
+    CT->>W2: GET /internals/chunks/metadata
+    Note over CT: its old copies come back ACTIVE (3 copies)<br/>copies of deleted objects -> ORPHAN
+
+    RJ->>W2: DELETE extra copy from the most-loaded worker,<br/>DELETE ORPHAN copies
+    Note over RJ: every chunk back to exactly 2 copies

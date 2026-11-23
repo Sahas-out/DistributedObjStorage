@@ -1,0 +1,38 @@
+sequenceDiagram
+    autonumber
+    participant DB as Controller SQLite
+    participant CT as Controller
+    participant RJ as Recovery goroutine
+    participant W as Worker
+    participant WD as Worker volume<br/>(slot-n)
+
+    rect rgba(100, 149, 237, 0.12)
+    Note over DB,RJ: Controller startup
+    CT->>DB: open metadata.db (objects, chunks, custom metadata persist)
+    Note over CT: worker table and chunk table start EMPTY
+    CT->>RJ: start (first 2 x announce interval: failure detection only, no repairs)
+    Note over CT: start HTTP server on :8080
+    end
+
+    rect rgba(60, 179, 113, 0.12)
+    Note over W,WD: Worker startup
+    W->>WD: claim lowest free slot-n (flock on .lock)
+    W->>WD: open metadata.db, reconcile:<br/>empty tmp/, delete unreferenced files, drop rows with no file
+    Note over W: listen on :8080, then start announcer goroutine
+    end
+
+    rect rgba(255, 165, 0, 0.12)
+    Note over CT,W: Registration
+    W->>CT: POST /internal/workers/register {worker_id: "", port}
+    Note over CT: assign w-<16 hex>, add worker as AVAILABLE<br/>(replace any old entry with the same address)
+    CT-->>W: {worker_id, status: AVAILABLE, announce_interval_seconds}
+    CT->>W: (sync goroutine) GET /internals/chunks/metadata
+    W-->>CT: [{chunk_id, object_id, sequence_no}, ...]
+    Note over CT: ACTIVE if the chunk is in SQLite, else ORPHAN<br/>worker becomes READY (gets reads and new chunks)
+    loop every announce interval (10 s)
+        W->>CT: POST /internal/workers/register {worker_id}
+        Note over CT: heartbeat: update last_seen
+    end
+    end
+
+    Note over CT,W: Controller restart: workers keep their ID, and the next announcement<br/>re-creates the entry with that ID and triggers a sync, so the tables refill within one interval

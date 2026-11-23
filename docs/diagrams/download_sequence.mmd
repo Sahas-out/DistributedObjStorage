@@ -1,0 +1,34 @@
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant CT as Controller
+    participant DB as Controller SQLite
+    participant R as Registry<br/>(in memory)
+    participant WA as Worker A
+    participant WB as Worker B
+
+    C->>CT: GET /api/v1/objects/{object_id}
+    CT->>DB: object row + ordered chunk list (size, SHA-256)
+    alt object not found
+        CT-->>C: 404 object_not_found
+    end
+
+    loop for each chunk in sequence order (chunk 0 is fetched before headers are sent)
+        CT->>R: Readable(object_id, seq)
+        R-->>CT: ACTIVE copies on READY workers,<br/>shuffled, workers that failed earlier last
+        CT->>WA: GET /internals/chunks/{chunk_id}
+        WA-->>CT: chunk data (unverified)
+        Note over CT: verify size + SHA-256 against SQLite
+        alt copy is good
+            CT-->>C: write chunk bytes (first time: 200 + headers)
+        else checksum mismatch / 404 / timeout
+            CT->>R: mark CORRUPTED / LOST (timeout: try worker last)
+            CT->>WB: GET /internals/chunks/{other chunk_id}
+            WB-->>CT: chunk data, verified
+            CT-->>C: write chunk bytes
+        end
+    end
+
+    opt no good copy of a chunk
+        CT-->>C: before headers: 500 object_corrupted / 503 object_unavailable<br/>after headers: connection aborted (short body)
+    end
