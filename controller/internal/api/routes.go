@@ -35,10 +35,12 @@ func NewServer(objects *object.Service, members *cluster.Membership, ping func(c
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	// Client API.
-	mux.HandleFunc("PUT /api/v1/objects", s.handleUpload)
+	mux.HandleFunc("POST /api/v1/objects", s.handleUpload)
 	mux.HandleFunc("GET /api/v1/objects", s.handleList)
 	mux.HandleFunc("GET /api/v1/objects/{object_id}", s.handleDownload)
 	mux.HandleFunc("DELETE /api/v1/objects/{object_id}", s.handleDelete)
+	mux.HandleFunc("GET /api/v1/objects/{object_id}/metadata", s.handleGetMetadata)
+	mux.HandleFunc("PATCH /api/v1/objects/{object_id}/metadata", s.handlePatchMetadata)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	// Internal API used by workers, plus read-only views of the cluster
@@ -58,8 +60,9 @@ func (s *Server) Handler() http.Handler {
 
 	// Catch-alls so these responses use the JSON error format too. More
 	// specific patterns above take priority.
-	mux.HandleFunc("/api/v1/objects", methodNotAllowed(http.MethodGet+", "+http.MethodHead+", "+http.MethodPut))
+	mux.HandleFunc("/api/v1/objects", methodNotAllowed(http.MethodGet+", "+http.MethodHead+", "+http.MethodPost))
 	mux.HandleFunc("/api/v1/objects/{object_id}", methodNotAllowed(http.MethodGet+", "+http.MethodHead+", "+http.MethodDelete))
+	mux.HandleFunc("/api/v1/objects/{object_id}/metadata", methodNotAllowed(http.MethodGet+", "+http.MethodHead+", "+http.MethodPatch))
 	mux.HandleFunc("/internal/workers", methodNotAllowed(http.MethodGet+", "+http.MethodHead))
 	// One catch-all covers /internal/workers/register too: a separate one
 	// would conflict with "DELETE /internal/workers/{worker_id}".

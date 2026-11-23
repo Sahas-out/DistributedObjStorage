@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { describeError } from "../api/http";
 import { downloadObject, saveBlob, uploadObject, type Progress } from "../api/objects";
-import type { ObjectInfo } from "../api/types";
+import type { CustomMetadata, ObjectInfo } from "../api/types";
 
 export type TransferKind = "upload" | "download";
 export type TransferState = "running" | "done" | "failed" | "cancelled";
@@ -71,9 +71,9 @@ export function useTransfers(onUploaded: (info: ObjectInfo) => void) {
   );
 
   const startUpload = useCallback(
-    (file: File) => {
+    (file: File, custom: CustomMetadata) => {
       const id = nextId++;
-      const handle = uploadObject(file, progress(id));
+      const handle = uploadObject(file, custom, progress(id));
       aborts.current.set(id, handle.abort);
       setTransfers((ts) => [
         { id, kind: "upload", name: file.name, loaded: 0, total: file.size, rate: 0, state: "running", startedAt: Date.now() },
@@ -99,7 +99,7 @@ export function useTransfers(onUploaded: (info: ObjectInfo) => void) {
       const id = nextId++;
       const ctrl = new AbortController();
       aborts.current.set(id, () => ctrl.abort());
-      const name = `${obj.object_id}.bin`;
+      const name = obj.name || `${obj.object_id}.bin`;
       setTransfers((ts) => [
         { id, kind: "download", name, loaded: 0, total: obj.size, rate: 0, state: "running", objectId: obj.object_id, startedAt: Date.now() },
         ...ts,

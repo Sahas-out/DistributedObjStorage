@@ -63,7 +63,7 @@ export function ObjectsPage() {
         </button>
       </div>
 
-      <UploadPanel onFiles={(files) => files.forEach(startUpload)} />
+      <UploadPanel onFiles={(files, custom) => files.forEach((f) => startUpload(f, custom))} />
 
       {objects.error !== undefined && (
         <div className="alert">Could not load objects: {describeError(objects.error)}</div>
@@ -83,13 +83,15 @@ export function ObjectsPage() {
         )}
       </section>
 
-      {details && <MetadataDrawer object={details} onClose={() => setDetails(null)} onDownload={startDownload} />}
+      {details && (
+        <MetadataDrawer object={details} onClose={() => setDetails(null)} onDownload={startDownload} onChanged={refresh} />
+      )}
       {confirm && (
         <ConfirmDialog
           title="Delete object?"
           body={
             <p>
-              <code>{confirm.object_id}</code> ({formatBytes(confirm.size)}, {confirm.chunk_count} chunks) and all of its
+              <strong>{confirm.name}</strong> (<code>{confirm.object_id}</code>, {formatBytes(confirm.size)}, {confirm.chunk_count} chunks) and all of its
               copies on the workers will be removed. This can't be undone.
             </p>
           }

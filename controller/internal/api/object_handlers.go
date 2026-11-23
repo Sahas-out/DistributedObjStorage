@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"time"
@@ -19,10 +20,13 @@ import (
 // remaining data before the error response is sent.
 const drainTimeout = 5 * time.Second
 
-// handleUpload stores the raw request body as a new object and responds 201
-// with its protocol.ObjectInfo.
+// handleUpload stores the "file" field of a multipart/form-data request as a
+// new object, with the custom metadata in the optional "metadata" field, and
+// responds 201 with its protocol.ObjectInfo. The file is streamed to the
+// workers as it arrives; a "metadata" field after it is read before the
+// object is committed.
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	obj, err := s.objects.Upload(r.Context(), r.Body)
+	obj, err := s.upload(r)
 	if err != nil {
 		s.discardBody(w, r)
 		s.writeObjectError(w, r, "", err)
@@ -31,6 +35,33 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", "/api/v1/objects/"+obj.ObjectID)
 	w.Header().Set("ETag", etag(obj))
 	writeJSON(w, http.StatusCreated, objectInfo(obj))
+}
+
+func (s *Server) upload(r *http.Request) (metadata.Object, error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return metadata.Object{}, badRequest(`the upload must be multipart/form-data with a "file" field (and an optional "metadata" JSON field)`)
+	}
+	form := &uploadForm{mr: mr}
+	file, err := form.nextFile()
+	if err != nil {
+		return metadata.Object{}, err
+	}
+	defer file.Close()
+	name := file.FileName()
+	spec := object.UploadSpec{
+		Name:        name,
+		ContentType: fileContentType(file, name),
+		Custom:      form.custom,
+		Finish: func(spec *object.UploadSpec) error {
+			if err := form.finish(); err != nil {
+				return err
+			}
+			spec.Custom = form.custom
+			return nil
+		},
+	}
+	return s.objects.Upload(r.Context(), file, spec)
 }
 
 // handleList responds with a JSON array of protocol.ObjectInfo for every
@@ -64,11 +95,14 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 func objectInfo(obj metadata.Object) protocol.ObjectInfo {
 	return protocol.ObjectInfo{
-		ObjectID:   obj.ObjectID,
-		Size:       obj.Size,
-		Checksum:   obj.Checksum,
-		ChunkCount: obj.ChunkCount,
-		CreatedAt:  obj.CreatedAt,
+		ObjectID:       obj.ObjectID,
+		Name:           obj.Name,
+		ContentType:    obj.ContentType,
+		Size:           obj.Size,
+		Checksum:       obj.Checksum,
+		ChunkCount:     obj.ChunkCount,
+		CreatedAt:      obj.CreatedAt,
+		LastModifiedAt: obj.UpdatedAt,
 	}
 }
 
@@ -126,11 +160,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// setObjectHeaders describes a download. The object is always sent as an
+// attachment, and nosniff is set, so a browser saves a stored HTML or SVG
+// file instead of running it in the controller's origin.
 func setObjectHeaders(w http.ResponseWriter, obj metadata.Object) {
 	h := w.Header()
-	h.Set("Content-Type", "application/octet-stream")
+	ct := obj.ContentType
+	if ct == "" {
+		ct = object.DefaultContentType
+	}
+	h.Set("Content-Type", ct)
+	h.Set("X-Content-Type-Options", "nosniff")
+	if cd := mime.FormatMediaType("attachment", map[string]string{"filename": obj.Name}); cd != "" {
+		h.Set("Content-Disposition", cd)
+	} else {
+		h.Set("Content-Disposition", "attachment")
+	}
 	h.Set("Content-Length", strconv.FormatInt(obj.Size, 10))
 	h.Set("ETag", etag(obj))
+	h.Set("Last-Modified", obj.UpdatedAt.UTC().Format(http.TimeFormat))
 }
 
 func etag(obj metadata.Object) string { return `"` + obj.Checksum + `"` }
@@ -138,7 +186,12 @@ func etag(obj metadata.Object) string { return `"` + obj.Checksum + `"` }
 // writeObjectError maps service errors to HTTP responses. Unexpected errors
 // are logged and reported without internal details.
 func (s *Server) writeObjectError(w http.ResponseWriter, r *http.Request, id string, err error) {
+	var reqErr *requestError
 	switch {
+	case errors.As(err, &reqErr):
+		writeError(w, http.StatusBadRequest, protocol.CodeInvalidRequest, reqErr.msg)
+	case errors.Is(err, object.ErrInvalidMetadata):
+		writeError(w, http.StatusBadRequest, protocol.CodeInvalidMetadata, object.ValidationMessage(err))
 	case errors.Is(err, metadata.ErrNotFound):
 		writeError(w, http.StatusNotFound, protocol.CodeObjectNotFound, "object "+id+" not found")
 	case errors.Is(err, object.ErrIncompleteUpload), errors.Is(err, context.Canceled):

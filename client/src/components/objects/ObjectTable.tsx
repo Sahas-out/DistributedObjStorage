@@ -3,7 +3,7 @@ import type { ObjectInfo } from "../../api/types";
 import { formatBytes, formatRelative, shortId } from "../../lib/format";
 import { CopyButton } from "../CopyButton";
 
-type SortKey = "created_at" | "size" | "chunk_count";
+type SortKey = "created_at" | "size" | "chunk_count" | "name";
 
 export function ObjectTable({
   objects,
@@ -23,8 +23,17 @@ export function ObjectTable({
 
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
-    const list = f ? objects.filter((o) => o.object_id.includes(f) || o.checksum.includes(f)) : objects.slice();
+    const list = f
+      ? objects.filter(
+          (o) =>
+            o.name.toLowerCase().includes(f) ||
+            o.content_type.toLowerCase().includes(f) ||
+            o.object_id.includes(f) ||
+            o.checksum.includes(f),
+        )
+      : objects.slice();
     list.sort((a, b) => {
+      if (sort.key === "name") return sort.desc ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name);
       const av = sort.key === "created_at" ? Date.parse(a.created_at) : a[sort.key];
       const bv = sort.key === "created_at" ? Date.parse(b.created_at) : b[sort.key];
       return sort.desc ? bv - av : av - bv;
@@ -32,9 +41,9 @@ export function ObjectTable({
     return list;
   }, [objects, filter, sort]);
 
-  const header = (key: SortKey, label: string) => (
+  const header = (key: SortKey, label: string, num = true) => (
     <th
-      className="sortable num"
+      className={`sortable${num ? " num" : ""}`}
       aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : "none"}
       onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : true }))}
     >
@@ -47,7 +56,7 @@ export function ObjectTable({
       <div className="table-tools">
         <input
           className="search"
-          placeholder="Filter by object ID or checksum…"
+          placeholder="Filter by name, type, object ID or checksum…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -59,6 +68,8 @@ export function ObjectTable({
         <table className="table">
           <thead>
             <tr>
+              {header("name", "Name", false)}
+              <th>Type</th>
               <th>Object ID</th>
               {header("size", "Size")}
               {header("chunk_count", "Chunks")}
@@ -70,7 +81,7 @@ export function ObjectTable({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="empty">
+                <td colSpan={8} className="empty">
                   {objects.length === 0 ? "No objects yet. Upload a file to get started." : "No objects match the filter."}
                 </td>
               </tr>
@@ -78,10 +89,14 @@ export function ObjectTable({
             {rows.map((o) => (
               <tr key={o.object_id} className={busy.has(o.object_id) ? "is-busy" : ""}>
                 <td>
-                  <span className="id-cell">
-                    <button type="button" className="link-btn mono" onClick={() => onDetails(o)} title={o.object_id}>
-                      {o.object_id}
-                    </button>
+                  <button type="button" className="link-btn" onClick={() => onDetails(o)} title={o.name}>
+                    {o.name}
+                  </button>
+                </td>
+                <td className="muted small">{o.content_type}</td>
+                <td>
+                  <span className="id-cell mono muted" title={o.object_id}>
+                    {shortId(o.object_id, 12)}
                     <CopyButton text={o.object_id} label="Copy object ID" />
                   </span>
                 </td>

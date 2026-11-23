@@ -2,9 +2,9 @@
 
 A mini distributed cloud object store: one controller, four storage workers, and clients. Objects are split into 1 MiB chunks and each chunk is stored on two workers. See [docs/Mini_Distributed_Cloud_Object_Store.pdf](docs/Mini_Distributed_Cloud_Object_Store.pdf) for the project statement.
 
-**Current status: Phase 5.** Workers register themselves with the controller, and the number of workers can be scaled with one command. Every chunk is stored on 2 different workers (replication factor 2), and chunks are spread evenly across workers. Clients can upload, download, list and delete objects. A copy that fails its checksum is detected, marked, and skipped in favour of the other copy.
+**Current status: Phase 7.** Workers register themselves with the controller, and the number of workers can be scaled with one command. Every chunk is stored on 2 different workers (replication factor 2), and chunks are spread evenly across workers. Clients can upload, download, list and delete objects. A copy that fails its checksum is detected, marked, and skipped in favour of the other copy. Each object has a name, a content type, creation and last-modified times, and custom key/value metadata, which can be read and changed without re-uploading the data.
 
-The controller also detects workers that stop sending heartbeats. A background recovery job restores lost copies, repairs corrupted ones, removes extra and orphan copies, and keeps an object whose only remaining copy sits on a dead worker, in case that worker comes back. Rebalancing existing chunks onto new workers and custom metadata come later.
+The controller also detects workers that stop sending heartbeats. A background recovery job restores lost copies, repairs corrupted ones, removes extra and orphan copies, and keeps an object whose only remaining copy sits on a dead worker, in case that worker comes back. Rebalancing existing chunks onto new workers comes later.
 
 ## Quick start: try the whole flow
 
@@ -15,8 +15,8 @@ curl -s localhost:8080/internal/workers   # 4 workers, status READY
 
 head -c 10485760 /dev/urandom > original.bin      # a 10 MiB test file
 
-# Upload. The response contains the object_id.
-curl -s -T original.bin http://localhost:8080/api/v1/objects
+# Upload (multipart/form-data) with custom metadata. The response contains the object_id.
+curl -s -F file=@original.bin -F 'metadata={"owner":"alice","project":"demo"}' localhost:8080/api/v1/objects
 ID=<object_id from the response>
 
 # Where are the 2 copies of each of the 10 chunks?
@@ -37,6 +37,23 @@ curl -s -o /dev/null -w "%{http_code}\n" -X DELETE localhost:8080/api/v1/objects
 
 docker compose down        # data survives; add -v to also delete the volumes
 ```
+
+### Demo: metadata
+
+```sh
+# System metadata, custom metadata and where every copy of every chunk is stored.
+curl -s localhost:8080/api/v1/objects/$ID/metadata
+
+# Rename, change the content type, add a key and remove one (null). No data is re-uploaded;
+# last_modified_at changes, checksum and chunks don't.
+curl -s -X PATCH -H 'Content-Type: application/json' \
+  -d '{"name":"renamed.bin","content_type":"application/x-test","custom_metadata":{"project":null,"reviewed":"yes"}}' \
+  localhost:8080/api/v1/objects/$ID/metadata
+
+curl -sI localhost:8080/api/v1/objects/$ID   # Content-Type and filename follow the new metadata
+```
+
+The schema changed in phase 7. If you have a `controller-data` volume from an earlier phase, remove it with `docker compose down -v` first.
 
 ### Demo: corrupted copy
 
@@ -94,7 +111,7 @@ The controller has no list of workers. Each worker knows `CONTROLLER_URL`. At st
 
 | Where | What | Why |
 |---|---|---|
-| SQLite (`DATA_DIR/metadata.db`) | `objects` (ID, size, checksum, chunk count, creation time) and `object_chunks` (object ID, sequence number, size, checksum) | These facts don't change while the object exists. The checksums let the controller verify any copy. |
+| SQLite (`DATA_DIR/metadata.db`) | `objects` (ID, name, content type, size, checksum, chunk count, creation and last-modified time), `object_chunks` (object ID, sequence number, size, checksum) and `object_custom_metadata` (object ID, key, value) | The data-describing facts never change while the object exists, and the checksums let the controller verify any copy. Name, content type and custom metadata change only through `PATCH`, in one transaction that also sets the last-modified time. Deleting an object deletes its chunk and custom-metadata rows too. |
 | Memory: worker table | worker ID → address, status (`AVAILABLE`/`READY`/`DEAD`), chunk count, last seen | IDs and addresses last only as long as a worker process. Built from registrations. |
 | Memory: chunk table | chunk ID → object ID, sequence number, worker ID, status | Copies can be lost or corrupted, so where they live is runtime state. Rebuilt from the workers' chunk reports. |
 
@@ -138,7 +155,7 @@ For each chunk, the controller picks the 2 `READY` workers that hold the fewest 
 
 ### Upload, download, delete
 
-- **Upload:** the controller reads the body into one reusable 1 MiB buffer. It sends each chunk to its 2 workers in parallel, then reads the next chunk, so memory use doesn't grow with object size. Metadata is committed in one SQLite transaction after every copy is stored, and then the copies become `ACTIVE`. If anything fails, all copies already sent are deleted and no object is created.
+- **Upload:** the body is `multipart/form-data`. The `file` part's filename and `Content-Type` become the object's name and content type. If the part's type is missing or `application/octet-stream`, the type is guessed from the file extension. The controller reads the `file` part into one reusable 1 MiB buffer. It sends each chunk to its 2 workers in parallel, then reads the next chunk, so memory use doesn't grow with object size. Metadata is committed in one SQLite transaction after every copy is stored, and then the copies become `ACTIVE`. A `metadata` field may come before or after `file`; one that comes after is read before the commit. If anything fails, including invalid metadata, all copies already sent are deleted and no object is created.
 - **Download:** for each chunk, the controller tries the `ACTIVE` copies in random order. Each copy is checked against the stored size and SHA-256. A copy that fails is marked `CORRUPTED` and the next copy is tried, so damaged data is never returned while a good copy exists. Chunks are fetched and written one at a time. Workers keep **no** checksums; all verification is done by the controller.
 - **Delete:** the metadata is deleted first, so the object disappears for clients at once. The copies are then deleted from the workers. A copy that can't be deleted is marked `ORPHAN`, and the delete still succeeds.
 
@@ -155,19 +172,36 @@ For each chunk, the controller picks the 2 `READY` workers that hold the fewest 
 
 | Method | Endpoint | Success | Notes |
 |---|---|---|---|
-| `PUT` | `/api/v1/objects` | `201` + `ObjectInfo` JSON | The request body is the raw object. The controller generates the object ID. |
+| `POST` | `/api/v1/objects` | `201` + `ObjectInfo` JSON | `multipart/form-data`: required `file` field, optional `metadata` field with a JSON object of string values. The controller generates the object ID. |
 | `GET` | `/api/v1/objects` | `200` + JSON array of `ObjectInfo` | Every stored object, oldest first. `[]` when empty. |
-| `GET` | `/api/v1/objects/{object_id}` | `200` + raw bytes | Sends `Content-Length` and `ETag` (the object's SHA-256). `HEAD` returns the headers only. |
+| `GET` | `/api/v1/objects/{object_id}` | `200` + raw bytes | Sends the stored `Content-Type`, `Content-Disposition: attachment; filename=…`, `Content-Length`, `ETag` (the object's SHA-256) and `Last-Modified`. `HEAD` returns the headers only. |
+| `GET` | `/api/v1/objects/{object_id}/metadata` | `200` + `ObjectMetadata` JSON | System metadata, custom metadata, and every chunk with its copies. The workers aren't contacted. |
+| `PATCH` | `/api/v1/objects/{object_id}/metadata` | `200` + `ObjectMetadata` JSON | JSON body, all fields optional: `name`, `content_type`, `custom_metadata` (each key is added or replaced; `null` removes it). Any change sets `last_modified_at`. |
 | `DELETE` | `/api/v1/objects/{object_id}` | `204` | Removes the object and its copies. |
 | `GET` | `/healthz` | `200` | Used by the Docker health check. |
 
+`ObjectInfo`:
+
 ```json
-{"object_id": "5f2c...", "size": 10485760, "checksum": "<sha256>", "chunk_count": 10, "created_at": "2026-11-21T10:00:00Z"}
+{"object_id": "5f2c...", "name": "original.bin", "content_type": "application/octet-stream", "size": 10485760,
+ "checksum": "<sha256>", "chunk_count": 10, "created_at": "2026-11-21T10:00:00Z", "last_modified_at": "2026-11-21T10:00:00Z"}
 ```
+
+`ObjectMetadata` is `ObjectInfo` plus:
+
+```json
+{"custom_metadata": {"owner": "alice"},
+ "chunks": [{"sequence_no": 0, "size": 1048576, "checksum": "<sha256>",
+             "replicas": [{"chunk_id": "9a1e...", "worker_id": "w-1", "worker_addr": "http://172.18.0.3:8080", "status": "ACTIVE"}, ...]}, ...]}
+```
+
+Metadata limits: name 1–255 bytes; content type must be a valid media type such as `image/png`; at most 64 custom keys per object; keys are 1–128 characters of `A-Z a-z 0-9 . _ -`; values are strings of up to 1024 bytes. An upload's `metadata` field is limited to 16 KiB, and a `PATCH` body to 64 KiB.
 
 | Status | Code | When |
 |---|---|---|
 | 400 | `invalid_object_id` | The ID is not 32 lowercase hex characters |
+| 400 | `invalid_request` | The upload isn't multipart or has no `file` field, a `metadata` field isn't a JSON object of strings, or a `PATCH` body isn't valid JSON (unknown field, non-string value, `null` name or content type) |
+| 400 | `invalid_metadata` | A name, content type, key or value breaks the limits above; nothing is stored or changed |
 | 400 | `upload_incomplete` | The client stopped sending before the upload finished; nothing is stored |
 | 404 | `object_not_found` | No object has this ID |
 | 405 | `method_not_allowed` | The endpoint doesn't support this method |

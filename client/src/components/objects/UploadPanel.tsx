@@ -1,16 +1,15 @@
 import { useRef, useState } from "react";
-import { METADATA_API_ENABLED } from "../../api/objects";
 import type { CustomMetadata } from "../../api/types";
 import { MetadataEditor } from "./MetadataEditor";
 
-export function UploadPanel({ onFiles }: { onFiles: (files: File[]) => void }) {
+export function UploadPanel({ onFiles }: { onFiles: (files: File[], custom: CustomMetadata) => void }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [meta, setMeta] = useState<CustomMetadata>({});
   const [showMeta, setShowMeta] = useState(false);
 
   const take = (list: FileList | null) => {
-    if (list && list.length > 0) onFiles(Array.from(list));
+    if (list && list.length > 0) onFiles(Array.from(list), meta);
   };
 
   return (
@@ -63,17 +62,15 @@ export function UploadPanel({ onFiles }: { onFiles: (files: File[]) => void }) {
 
       <button type="button" className="link-btn" onClick={() => setShowMeta((s) => !s)} aria-expanded={showMeta}>
         {showMeta ? "▾" : "▸"} Custom metadata for new uploads
-        {!METADATA_API_ENABLED && <span className="badge badge-soon">coming soon</span>}
+        {Object.keys(meta).length > 0 && <span className="badge badge-count">{Object.keys(meta).length}</span>}
       </button>
       {showMeta && (
         <div className="upload-meta">
-          {!METADATA_API_ENABLED && (
-            <p className="muted small">
-              The controller doesn't support custom metadata yet (planned <code>PATCH /api/v1/objects/&#123;id&#125;/metadata</code>).
-              Uploads store system metadata only: size, SHA-256 checksum, chunk count and creation time.
-            </p>
-          )}
-          <MetadataEditor value={meta} onChange={setMeta} disabled={!METADATA_API_ENABLED} />
+          <p className="muted small">
+            These key/value pairs are attached to every file uploaded while they are set. The file's name and type are stored
+            too; all of it can be changed later in the object's details.
+          </p>
+          <MetadataEditor value={meta} onChange={setMeta} disabled={false} />
         </div>
       )}
     </section>

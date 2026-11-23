@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"strings"
 	"sync"
 	"testing"
 	"testing/iotest"
@@ -149,6 +151,42 @@ func (f *fakeMeta) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+func (f *fakeMeta) UpdateMetadata(_ context.Context, id string, u metadata.Update) (metadata.Object, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.objects[id]
+	if !ok {
+		return metadata.Object{}, metadata.ErrNotFound
+	}
+	if u.Empty() {
+		return o, nil
+	}
+	custom := maps.Clone(o.Custom)
+	if custom == nil {
+		custom = map[string]string{}
+	}
+	for k, v := range u.Custom {
+		if v == nil {
+			delete(custom, k)
+		} else {
+			custom[k] = *v
+		}
+	}
+	if u.MaxKeys > 0 && len(custom) > u.MaxKeys {
+		return metadata.Object{}, metadata.ErrTooManyKeys
+	}
+	if u.Name != nil {
+		o.Name = *u.Name
+	}
+	if u.ContentType != nil {
+		o.ContentType = *u.ContentType
+	}
+	o.Custom = custom
+	o.UpdatedAt = u.Now
+	f.objects[id] = o
+	return o, nil
+}
+
 func addr(i int) string { return fmt.Sprintf("http://10.0.0.%d:8080", i) }
 
 // setup builds a Service with n READY workers and replication factor 2.
@@ -183,7 +221,7 @@ func TestUploadDownloadRoundTrip(t *testing.T) {
 		svc, w, _, reg := setup(t, 3)
 		data := bytes.Repeat([]byte{0, 1, 2, 0xff, 7}, 10)[:length]
 
-		obj, err := svc.Upload(context.Background(), bytes.NewReader(data))
+		obj, err := svc.Upload(context.Background(), bytes.NewReader(data), UploadSpec{})
 		if err != nil {
 			t.Fatalf("length %d: Upload: %v", length, err)
 		}
@@ -212,7 +250,7 @@ func TestUploadDownloadRoundTrip(t *testing.T) {
 
 func TestEachChunkHasTwoCopiesOnDistinctWorkers(t *testing.T) {
 	svc, _, _, reg := setup(t, 4)
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 10*testChunkSize)))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 10*testChunkSize)), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +279,7 @@ func TestEachChunkHasTwoCopiesOnDistinctWorkers(t *testing.T) {
 
 func TestUploadNeedsTwoReadyWorkers(t *testing.T) {
 	svc, w, m, _ := setup(t, 1)
-	_, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 3)))
+	_, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 3)), UploadSpec{})
 	if !errors.Is(err, cluster.ErrInsufficientWorkers) {
 		t.Fatalf("error = %v, want ErrInsufficientWorkers", err)
 	}
@@ -253,7 +291,7 @@ func TestUploadNeedsTwoReadyWorkers(t *testing.T) {
 func TestFailedReplicaLeavesNothingBehind(t *testing.T) {
 	svc, w, m, reg := setup(t, 3)
 	w.failPutAt = 2
-	_, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 5*testChunkSize)))
+	_, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 5*testChunkSize)), UploadSpec{})
 	if !errors.Is(err, workers.ErrUnavailable) {
 		t.Fatalf("error = %v, want ErrUnavailable", err)
 	}
@@ -270,7 +308,7 @@ func TestFailedReplicaLeavesNothingBehind(t *testing.T) {
 func TestTruncatedUploadIsNotCommitted(t *testing.T) {
 	svc, w, m, _ := setup(t, 2)
 	src := io.MultiReader(bytes.NewReader(make([]byte, testChunkSize+3)), iotest.ErrReader(io.ErrUnexpectedEOF))
-	if _, err := svc.Upload(context.Background(), src); !errors.Is(err, ErrIncompleteUpload) {
+	if _, err := svc.Upload(context.Background(), src, UploadSpec{}); !errors.Is(err, ErrIncompleteUpload) {
 		t.Fatalf("error = %v, want ErrIncompleteUpload", err)
 	}
 	if len(m.objects) != 0 || w.total() != 0 {
@@ -281,7 +319,7 @@ func TestTruncatedUploadIsNotCommitted(t *testing.T) {
 func TestMetadataFailureRemovesChunks(t *testing.T) {
 	svc, w, m, _ := setup(t, 2)
 	m.createErr = errors.New("disk full")
-	if _, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 20))); err == nil {
+	if _, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 20)), UploadSpec{}); err == nil {
 		t.Fatal("Upload succeeded, want error")
 	}
 	if w.total() != 0 {
@@ -292,7 +330,7 @@ func TestMetadataFailureRemovesChunks(t *testing.T) {
 func TestDownloadFallsBackFromCorruptedReplica(t *testing.T) {
 	svc, w, _, reg := setup(t, 3)
 	data := bytes.Repeat([]byte("abcdefgh"), 3)
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(data))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(data), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +368,7 @@ func TestDownloadFallsBackFromCorruptedReplica(t *testing.T) {
 func TestDownloadFallsBackFromUnreachableWorker(t *testing.T) {
 	svc, w, _, _ := setup(t, 2)
 	data := []byte("0123456789abcdef!")
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(data))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(data), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +386,7 @@ func TestDownloadFallsBackFromUnreachableWorker(t *testing.T) {
 
 func TestDownloadWithEveryReplicaCorrupted(t *testing.T) {
 	svc, w, _, reg := setup(t, 2)
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 2*testChunkSize)))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 2*testChunkSize)), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +406,7 @@ func TestDownloadWithEveryReplicaCorrupted(t *testing.T) {
 
 func TestDeleteRemovesReplicas(t *testing.T) {
 	svc, w, m, reg := setup(t, 3)
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 4*testChunkSize)))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 4*testChunkSize)), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +423,7 @@ func TestDeleteRemovesReplicas(t *testing.T) {
 
 func TestDeleteMarksUnremovableReplicasOrphan(t *testing.T) {
 	svc, w, m, reg := setup(t, 2)
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 2*testChunkSize)))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 2*testChunkSize)), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +448,7 @@ func TestDeleteMarksUnremovableReplicasOrphan(t *testing.T) {
 func TestDownloadTriesAFailedWorkerOnlyOnce(t *testing.T) {
 	svc, w, _, _ := setup(t, 2) // every chunk has a copy on both workers
 	data := bytes.Repeat([]byte("0123456789"), 20)
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(data))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(data), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +464,7 @@ func TestDownloadTriesAFailedWorkerOnlyOnce(t *testing.T) {
 func TestDownloadMarksMissingReplicaLost(t *testing.T) {
 	svc, w, _, reg := setup(t, 2)
 	data := []byte("abcdefgh")
-	obj, err := svc.Upload(context.Background(), bytes.NewReader(data))
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(data), UploadSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,6 +484,134 @@ func TestDownloadMarksMissingReplicaLost(t *testing.T) {
 	for _, l := range reg.ObjectReplicas(obj.ObjectID) {
 		if l.ChunkID == gone.ChunkID && l.Status != cluster.ReplicaLost {
 			t.Fatalf("missing replica status = %s, want LOST", l.Status)
+		}
+	}
+}
+
+func TestUploadStoresMetadata(t *testing.T) {
+	svc, _, _, _ := setup(t, 2)
+	obj, err := svc.Upload(context.Background(), bytes.NewReader([]byte("hello")), UploadSpec{
+		Name:        "hello.txt",
+		ContentType: "text/plain;charset=utf-8",
+		Custom:      map[string]string{"owner": "alice"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.Name != "hello.txt" || obj.ContentType != "text/plain; charset=utf-8" || obj.Custom["owner"] != "alice" {
+		t.Fatalf("object = %+v", obj)
+	}
+	if !obj.UpdatedAt.Equal(obj.CreatedAt) {
+		t.Fatalf("UpdatedAt %v != CreatedAt %v", obj.UpdatedAt, obj.CreatedAt)
+	}
+}
+
+func TestUploadDefaultsNameAndContentType(t *testing.T) {
+	svc, _, _, _ := setup(t, 2)
+	obj, err := svc.Upload(context.Background(), bytes.NewReader([]byte("x")), UploadSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.Name != obj.ObjectID || obj.ContentType != DefaultContentType {
+		t.Fatalf("object = %+v", obj)
+	}
+}
+
+func TestUploadRejectsInvalidMetadataBeforeStoringData(t *testing.T) {
+	svc, w, m, _ := setup(t, 2)
+	for _, spec := range []UploadSpec{
+		{ContentType: "not a type"},
+		{Name: "bad\nname"},
+		{Custom: map[string]string{"has space": "v"}},
+		{Custom: map[string]string{"k": strings.Repeat("v", MaxCustomValueBytes+1)}},
+	} {
+		_, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 20)), spec)
+		if !errors.Is(err, ErrInvalidMetadata) {
+			t.Errorf("spec %+v: error = %v, want ErrInvalidMetadata", spec, err)
+		}
+	}
+	if w.total() != 0 || len(m.objects) != 0 {
+		t.Fatalf("invalid uploads left %d replicas and %d objects", w.total(), len(m.objects))
+	}
+}
+
+func TestUploadFinishRunsBeforeCommit(t *testing.T) {
+	svc, w, m, _ := setup(t, 2)
+	obj, err := svc.Upload(context.Background(), bytes.NewReader(make([]byte, 20)), UploadSpec{
+		Finish: func(s *UploadSpec) error { s.Custom = map[string]string{"late": "yes"}; return nil },
+	})
+	if err != nil || obj.Custom["late"] != "yes" {
+		t.Fatalf("Upload = %+v, %v", obj, err)
+	}
+
+	boom := errors.New("boom")
+	_, err = svc.Upload(context.Background(), bytes.NewReader(make([]byte, 20)), UploadSpec{
+		Finish: func(*UploadSpec) error { return boom },
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("error = %v, want boom", err)
+	}
+	// Late metadata is validated too.
+	_, err = svc.Upload(context.Background(), bytes.NewReader(make([]byte, 20)), UploadSpec{
+		Finish: func(s *UploadSpec) error { s.Custom = map[string]string{"bad key": "v"}; return nil },
+	})
+	if !errors.Is(err, ErrInvalidMetadata) {
+		t.Fatalf("error = %v, want ErrInvalidMetadata", err)
+	}
+	if len(m.objects) != 1 || w.total() != 2*3 {
+		t.Fatalf("failed uploads left data behind: %d objects, %d replicas", len(m.objects), w.total())
+	}
+}
+
+func strp(s string) *string { return &s }
+
+func TestUpdateMetadata(t *testing.T) {
+	svc, _, _, _ := setup(t, 2)
+	obj, err := svc.Upload(context.Background(), bytes.NewReader([]byte("data")), UploadSpec{
+		Name: "a.bin", Custom: map[string]string{"tag": "x", "owner": "alice"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.UpdateMetadata(context.Background(), obj.ObjectID, MetadataUpdate{
+		Name:        strp("b.txt"),
+		ContentType: strp("TEXT/plain"),
+		Custom:      map[string]*string{"tag": nil, "reviewed": strp("yes")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "b.txt" || got.ContentType != "text/plain" || len(got.Custom) != 2 ||
+		got.Custom["owner"] != "alice" || got.Custom["reviewed"] != "yes" || !got.UpdatedAt.After(obj.UpdatedAt) {
+		t.Fatalf("updated object = %+v", got)
+	}
+	if got.Checksum != obj.Checksum || got.Size != obj.Size {
+		t.Fatal("metadata update changed the object's data description")
+	}
+}
+
+func TestUpdateMetadataErrors(t *testing.T) {
+	svc, _, _, _ := setup(t, 2)
+	obj, err := svc.Upload(context.Background(), bytes.NewReader([]byte("data")), UploadSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdateMetadata(context.Background(), "0123456789abcdef0123456789abcdef", MetadataUpdate{Name: strp("x")}); !errors.Is(err, metadata.ErrNotFound) {
+		t.Fatalf("missing object: error = %v", err)
+	}
+	many := map[string]*string{}
+	for i := range MaxCustomKeys + 1 {
+		many[fmt.Sprintf("k%d", i)] = strp("v")
+	}
+	for _, u := range []MetadataUpdate{
+		{Name: strp("")},
+		{ContentType: strp("nope")},
+		{Custom: map[string]*string{"": strp("v")}},
+		{Custom: map[string]*string{"k/1": nil}},
+		{Custom: many},
+	} {
+		if _, err := svc.UpdateMetadata(context.Background(), obj.ObjectID, u); !errors.Is(err, ErrInvalidMetadata) {
+			t.Errorf("update %+v: error = %v, want ErrInvalidMetadata", u, err)
 		}
 	}
 }

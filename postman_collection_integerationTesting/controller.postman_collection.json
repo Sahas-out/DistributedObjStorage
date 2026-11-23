@@ -2,7 +2,7 @@
   "info": {
     "name": "DOS Controller API (multi-worker)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Client-facing and internal controller API (phase 3). Start the stack with `docker compose up -d --build` (1 controller + 4 workers). Run 'Upload text object' first: its test saves {{objectId}}. 'List workers' saves the first worker's ID into {{workerId}}. Saved example responses for unchanged requests were captured from the phase 2 stack."
+    "description": "Client-facing and internal controller API (phase 7). Start the stack with `docker compose up -d --build` (1 controller + 4 workers). Run an upload request first (pick a file in its Body tab): its test saves {{objectId}}. 'List workers' saves the first worker's ID into {{workerId}}."
   },
   "item": [
     {
@@ -52,9 +52,9 @@
       ]
     },
     {
-      "name": "Upload text object",
+      "name": "Upload object with custom metadata",
       "request": {
-        "method": "PUT",
+        "method": "POST",
         "header": [],
         "url": {
           "raw": "{{baseUrl}}/api/v1/objects",
@@ -67,65 +67,26 @@
             "objects"
           ]
         },
-        "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores each chunk on 2 different workers. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
+        "description": "multipart/form-data with a required `file` field and an optional `metadata` field holding a JSON object of custom string key/values. The file part's filename and Content-Type become the object's name and content type. The controller splits the data into 1 MiB chunks and stores each chunk on 2 different workers. The test script saves object_id into {{objectId}}.",
         "body": {
-          "mode": "raw",
-          "raw": "Hello, distributed world!",
-          "options": {
-            "raw": {
-              "language": "text"
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "metadata",
+              "value": "{\"owner\":\"alice\",\"project\":\"demo\"}",
+              "type": "text",
+              "contentType": "application/json"
+            },
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Pick any file in the Body tab"
             }
-          }
+          ]
         }
       },
-      "response": [
-        {
-          "name": "201 Created",
-          "originalRequest": {
-            "method": "PUT",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/objects",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "objects"
-              ]
-            },
-            "description": "The body is the raw object bytes (not JSON). The controller splits it into 1 MiB chunks and stores each chunk on 2 different workers. The test script saves object_id into the {{objectId}} collection variable for the download requests.",
-            "body": {
-              "mode": "raw",
-              "raw": "Hello, distributed world!",
-              "options": {
-                "raw": {
-                  "language": "text"
-                }
-              }
-            }
-          },
-          "status": "Created",
-          "code": 201,
-          "_postman_previewlanguage": "json",
-          "header": [
-            {
-              "key": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "key": "ETag",
-              "value": "\"cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b\""
-            },
-            {
-              "key": "Location",
-              "value": "/api/v1/objects/4537785f9fe84ec13ac9d350daf00de8"
-            }
-          ],
-          "body": "{\n  \"object_id\": \"4537785f9fe84ec13ac9d350daf00de8\",\n  \"size\": 25,\n  \"checksum\": \"cf1fd83d5f47cc6004b1cf74c6b1fefa09048c2f2581bb577cea6e5538f38c9b\",\n  \"chunk_count\": 1,\n  \"created_at\": \"2026-11-20T17:01:25.250874684Z\"\n}"
-        }
-      ],
+      "response": [],
       "event": [
         {
           "listen": "test",
@@ -145,13 +106,8 @@
     {
       "name": "Upload a file (pick one >1 MiB to see multiple chunks)",
       "request": {
-        "method": "PUT",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/octet-stream"
-          }
-        ],
+        "method": "POST",
+        "header": [],
         "url": {
           "raw": "{{baseUrl}}/api/v1/objects",
           "host": [
@@ -163,64 +119,19 @@
             "objects"
           ]
         },
-        "description": "In the Body tab, choose 'binary' and select a file. Example: a 2.5 MiB file is stored as 3 chunks. Then run 'Object replicas' to see the 2 copies of every chunk.",
+        "description": "In the Body tab, select a file for the `file` field. Example: a 2.5 MiB file is stored as 3 chunks. Then run 'Get object metadata' to see the 2 copies of every chunk.",
         "body": {
-          "mode": "file",
-          "file": {
-            "src": ""
-          }
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": []
+            }
+          ]
         }
       },
-      "response": [
-        {
-          "name": "201 Created",
-          "originalRequest": {
-            "method": "PUT",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/octet-stream"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/objects",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "objects"
-              ]
-            },
-            "description": "In the Body tab, choose 'binary' and select a file. Example: a 2.5 MiB file is stored as 3 chunks.",
-            "body": {
-              "mode": "file",
-              "file": {
-                "src": ""
-              }
-            }
-          },
-          "status": "Created",
-          "code": 201,
-          "_postman_previewlanguage": "json",
-          "header": [
-            {
-              "key": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "key": "ETag",
-              "value": "\"e2482c90bbd0bf7f0de167c8f6524ecb378fd1f1c51a48edf28fd08595614497\""
-            },
-            {
-              "key": "Location",
-              "value": "/api/v1/objects/a588fbde11d83f39d7b92bc75a4bb90f"
-            }
-          ],
-          "body": "{\n  \"object_id\": \"a588fbde11d83f39d7b92bc75a4bb90f\",\n  \"size\": 2621440,\n  \"checksum\": \"e2482c90bbd0bf7f0de167c8f6524ecb378fd1f1c51a48edf28fd08595614497\",\n  \"chunk_count\": 3,\n  \"created_at\": \"2026-11-20T17:01:25.479265105Z\"\n}"
-        }
-      ],
+      "response": [],
       "event": [
         {
           "listen": "test",
@@ -354,6 +265,87 @@
             }
           ],
           "body": ""
+        }
+      ]
+    },
+    {
+      "name": "Get object metadata",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}/metadata",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects",
+            "{{objectId}}",
+            "metadata"
+          ]
+        },
+        "description": "System metadata (name, content type, size, checksum, chunk count, created and last-modified time), custom metadata, and every chunk with the workers holding its copies. Does not read the object's data."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('every chunk has 2 copies', () => pm.response.json().chunks.forEach(c => pm.expect(c.replicas.length).to.eql(2)));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Update object metadata",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}/metadata",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "objects",
+            "{{objectId}}",
+            "metadata"
+          ]
+        },
+        "description": "All fields are optional. `name` and `content_type` replace the current values. In `custom_metadata` each key is added or updated; a `null` value removes the key. The object's data is not re-uploaded; `last_modified_at` changes. Returns the same body as 'Get object metadata'.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"renamed.txt\",\n  \"content_type\": \"text/plain\",\n  \"custom_metadata\": {\n    \"project\": null,\n    \"reviewed\": \"yes\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));"
+            ]
+          }
         }
       ]
     },
@@ -869,13 +861,8 @@
         {
           "name": "Upload with fewer than 2 workers -> 503",
           "request": {
-            "method": "PUT",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
+            "method": "POST",
+            "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/objects",
               "host": [
@@ -889,13 +876,14 @@
             },
             "description": "Nothing detects stopped workers yet, so stopping or scaling down doesn't remove them from the controller. To get below 2 READY workers, restart the controller with one worker running: docker compose up -d --scale worker=1 && docker compose restart controller (wait ~30 s for the worker to re-announce). Afterwards: docker compose up -d --scale worker=4.",
             "body": {
-              "mode": "raw",
-              "raw": "not enough workers",
-              "options": {
-                "raw": {
-                  "language": "json"
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "value": "not enough workers",
+                  "type": "text"
                 }
-              }
+              ]
             }
           },
           "response": [],
@@ -941,6 +929,148 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK from the remaining copy', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update metadata with an invalid key -> 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/{{objectId}}/metadata",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "{{objectId}}",
+                "metadata"
+              ]
+            },
+            "description": "Custom keys may only use letters, digits, '.', '_' and '-'. Nothing is changed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_metadata\": {\n    \"bad key\": \"x\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 invalid_metadata', () => {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('invalid_metadata');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update metadata of unknown object -> 404",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects/0123456789abcdef0123456789abcdef/metadata",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects",
+                "0123456789abcdef0123456789abcdef",
+                "metadata"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"custom_metadata\": {\n    \"k\": \"v\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 object_not_found', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('object_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Upload without a file field -> 400",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/objects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "objects"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "metadata",
+                  "value": "{\"k\":\"v\"}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 invalid_request', () => {",
+                  "  pm.response.to.have.status(400);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('invalid_request');",
+                  "});"
                 ]
               }
             }

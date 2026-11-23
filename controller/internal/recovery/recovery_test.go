@@ -26,6 +26,8 @@ type fakeWorkers struct {
 	chunks  map[string]map[string]protocol.Chunk // addr -> chunk ID -> chunk
 	down    map[string]bool                      // addr -> every call fails
 	onPut   func(chunkID string)                 // called after a successful put
+	puts    atomic.Int32
+	gets    atomic.Int32
 	deletes atomic.Int32
 }
 
@@ -39,6 +41,7 @@ func (f *fakeWorkers) PutChunk(_ context.Context, addr, id, obj string, seq int,
 		f.chunks[addr] = map[string]protocol.Chunk{}
 	}
 	f.chunks[addr][id] = protocol.Chunk{ObjectID: obj, SequenceNo: seq, Data: bytes.Clone(data)}
+	f.puts.Add(1)
 	hook := f.onPut
 	f.mu.Unlock()
 	if hook != nil {
@@ -50,6 +53,7 @@ func (f *fakeWorkers) PutChunk(_ context.Context, addr, id, obj string, seq int,
 func (f *fakeWorkers) GetChunk(_ context.Context, addr, id string) (protocol.Chunk, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets.Add(1)
 	if f.down[addr] {
 		return protocol.Chunk{}, workers.ErrUnavailable
 	}
@@ -514,5 +518,30 @@ func TestCopyForObjectDeletedMeanwhileIsRemoved(t *testing.T) {
 	}
 	if _, ok := h.fw.data(h.addrs["w2"], "new1"); ok {
 		t.Fatal("new copy left on w2's disk")
+	}
+}
+
+func TestHealthyChunksCostNoWorkerRequests(t *testing.T) {
+	h := newHarness(t)
+	h.object("o", 3)
+	h.worker("w0", cp("o", 0, "a0"), cp("o", 1, "a1"), cp("o", 2, "a2"))
+	h.worker("w1", cp("o", 0, "b0"), cp("o", 1, "b1"), cp("o", 2, "b2"))
+	h.worker("w2")
+	puts := h.fw.puts.Load() // the harness's own setup writes
+
+	for range 3 {
+		h.tick()
+	}
+	if g, p, d := h.fw.gets.Load(), h.fw.puts.Load()-puts, h.fw.deletes.Load(); g != 0 || p != 0 || d != 0 {
+		t.Fatalf("idle ticks made %d gets, %d puts, %d deletes; want none", g, p, d)
+	}
+	// Silent corruption of a healthy chunk is not looked for.
+	h.fw.corrupt(h.addrs["w0"], "a1")
+	h.tick()
+	if g := h.fw.gets.Load(); g != 0 {
+		t.Fatalf("recovery read %d copies of healthy chunks", g)
+	}
+	if st := h.rec.Status(); st.DegradedChunks != 0 || st.UnavailableChunks != 0 || st.LastScan.IsZero() {
+		t.Fatalf("status = %+v", st)
 	}
 }

@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,17 +144,70 @@ func do(t *testing.T, method, url string, body io.Reader) *http.Response {
 	return resp
 }
 
-func upload(t *testing.T, base string, data []byte) protocol.ObjectInfo {
+// formPart is one field of a multipart/form-data upload. A part with a
+// filename is a file field.
+type formPart struct {
+	field, filename, contentType, body string
+}
+
+func filePart(name string, data []byte) formPart {
+	return formPart{field: "file", filename: name, contentType: "application/octet-stream", body: string(data)}
+}
+
+func metaPart(json string) formPart { return formPart{field: "metadata", body: json} }
+
+// postForm sends parts as a multipart/form-data POST to /api/v1/objects.
+func postForm(t *testing.T, base string, parts ...formPart) *http.Response {
 	t.Helper()
-	resp := do(t, http.MethodPut, base+"/api/v1/objects", bytes.NewReader(data))
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, p := range parts {
+		h := textproto.MIMEHeader{}
+		cd := fmt.Sprintf(`form-data; name=%q`, p.field)
+		if p.filename != "" {
+			cd += fmt.Sprintf(`; filename=%q`, p.filename)
+		}
+		h.Set("Content-Disposition", cd)
+		if p.contentType != "" {
+			h.Set("Content-Type", p.contentType)
+		}
+		w, err := mw.CreatePart(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, p.body)
+	}
+	mw.Close()
+	req, err := http.NewRequest(http.MethodPost, base+"/api/v1/objects", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func uploadParts(t *testing.T, base string, parts ...formPart) protocol.ObjectInfo {
+	t.Helper()
+	resp := postForm(t, base, parts...)
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("upload status = %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upload status = %d: %s", resp.StatusCode, body)
 	}
 	var info protocol.ObjectInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		t.Fatal(err)
 	}
 	return info
+}
+
+func upload(t *testing.T, base string, data []byte) protocol.ObjectInfo {
+	t.Helper()
+	return uploadParts(t, base, filePart("data.bin", data))
 }
 
 func wantError(t *testing.T, resp *http.Response, status int, code string) {
@@ -215,6 +271,9 @@ func TestErrorResponses(t *testing.T) {
 		wantError(t, do(t, http.MethodDelete, objects, nil), http.StatusMethodNotAllowed, protocol.CodeMethodNotAllowed)
 		wantError(t, do(t, http.MethodPost, objects+"/"+strings.Repeat("a", 32), nil), http.StatusMethodNotAllowed, protocol.CodeMethodNotAllowed)
 	})
+	t.Run("upload with PUT", func(t *testing.T) {
+		wantError(t, do(t, http.MethodPut, objects, strings.NewReader("data")), http.StatusMethodNotAllowed, protocol.CodeMethodNotAllowed)
+	})
 	t.Run("unknown route", func(t *testing.T) {
 		wantError(t, do(t, http.MethodGet, srv.URL+"/nope", nil), http.StatusNotFound, protocol.CodeNotFound)
 	})
@@ -237,7 +296,7 @@ func TestErrorResponses(t *testing.T) {
 			worker.putErr = nil
 			worker.mu.Unlock()
 		}()
-		wantError(t, do(t, http.MethodPut, objects, bytes.NewReader(make([]byte, 100))), http.StatusServiceUnavailable, protocol.CodeWorkerUnavailable)
+		wantError(t, postForm(t, srv.URL, filePart("x.bin", make([]byte, 100))), http.StatusServiceUnavailable, protocol.CodeWorkerUnavailable)
 	})
 }
 
@@ -262,7 +321,7 @@ func TestMidStreamFailureAbortsConnection(t *testing.T) {
 
 func TestUploadWithTooFewWorkers(t *testing.T) {
 	env := newTestServer(t, 1)
-	resp := do(t, http.MethodPut, env.srv.URL+"/api/v1/objects", bytes.NewReader([]byte("data")))
+	resp := postForm(t, env.srv.URL, filePart("x.bin", []byte("data")))
 	wantError(t, resp, http.StatusServiceUnavailable, protocol.CodeInsufficientWorkers)
 }
 

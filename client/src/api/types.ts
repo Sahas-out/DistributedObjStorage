@@ -2,10 +2,41 @@
 
 export interface ObjectInfo {
   object_id: string;
+  name: string;
+  content_type: string;
   size: number;
   checksum: string; // SHA-256 hex of the whole object
   chunk_count: number;
   created_at: string;
+  last_modified_at: string; // last change of name, content type or custom metadata
+}
+
+/** Where one copy of a chunk is stored. */
+export interface ChunkLocation {
+  chunk_id: string;
+  worker_id: string;
+  worker_addr: string;
+  status: string; // ACTIVE, CORRUPTED, LOST, ...
+}
+
+export interface ChunkInfo {
+  sequence_no: number;
+  size: number;
+  checksum: string;
+  replicas: ChunkLocation[];
+}
+
+/** GET/PATCH /api/v1/objects/{id}/metadata: system + custom metadata. */
+export interface ObjectMetadata extends ObjectInfo {
+  custom_metadata: CustomMetadata;
+  chunks: ChunkInfo[];
+}
+
+/** PATCH body: omitted fields are unchanged; a null custom value removes the key. */
+export interface MetadataPatch {
+  name?: string;
+  content_type?: string;
+  custom_metadata?: Record<string, string | null>;
 }
 
 export interface ErrorResponse {
@@ -81,5 +112,5 @@ export interface EventsResponse {
   last_seq: number;
 }
 
-/** Custom, user-defined key/value metadata (not supported by the controller yet). */
+/** Custom, user-defined key/value metadata. */
 export type CustomMetadata = Record<string, string>;

@@ -250,29 +250,35 @@ func (r *Recovery) checkChunk(ctx context.Context, ref metadata.ChunkRef, locs [
 		return stateLost
 	}
 
-	data, good := r.readGood(ctx, ref, good)
-	if data == nil {
-		return stateDegraded // no good copy could be read now; next tick
-	}
+	// A good copy is read only when there is something to write: a copy to
+	// rewrite or a missing copy to add. A healthy chunk costs no requests to
+	// the workers (recovery does not scrub for silent corruption).
+	if len(repair) > 0 || len(good) < r.cfg.ReplicationFactor {
+		var data []byte
+		data, good = r.readGood(ctx, ref, good)
+		if data == nil {
+			return stateDegraded // no good copy could be read now; next tick
+		}
 
-	holders := map[string]bool{}
-	for _, l := range locs {
-		holders[l.WorkerID] = true
-	}
-	for _, l := range repair {
-		if r.rewrite(ctx, ref, l, data) {
-			good = append(good, l)
+		holders := map[string]bool{}
+		for _, l := range locs {
+			holders[l.WorkerID] = true
 		}
-	}
-	for len(good) < r.cfg.ReplicationFactor {
-		loc, err := r.reg.PlaceReplica(ref.ObjectID, ref.SequenceNo, holders, r.newID)
-		if err != nil {
-			r.log.Debug("recovery: no worker for another copy", "object_id", ref.ObjectID, "sequence_no", ref.SequenceNo, "error", err)
-			break
+		for _, l := range repair {
+			if r.rewrite(ctx, ref, l, data) {
+				good = append(good, l)
+			}
 		}
-		holders[loc.WorkerID] = true
-		if r.copyTo(ctx, ref, loc, data) {
-			good = append(good, loc)
+		for len(good) < r.cfg.ReplicationFactor {
+			loc, err := r.reg.PlaceReplica(ref.ObjectID, ref.SequenceNo, holders, r.newID)
+			if err != nil {
+				r.log.Debug("recovery: no worker for another copy", "object_id", ref.ObjectID, "sequence_no", ref.SequenceNo, "error", err)
+				break
+			}
+			holders[loc.WorkerID] = true
+			if r.copyTo(ctx, ref, loc, data) {
+				good = append(good, loc)
+			}
 		}
 	}
 	if len(good) > r.cfg.ReplicationFactor {

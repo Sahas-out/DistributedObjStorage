@@ -1,15 +1,8 @@
 // Client API of the controller (docs/ClientApi.png, README "Client API").
 import { ApiError, errorFromBody, errorFromResponse, getJSON } from "./http";
-import type { CustomMetadata, ObjectInfo } from "./types";
+import type { CustomMetadata, MetadataPatch, ObjectInfo, ObjectMetadata } from "./types";
 
 const OBJECTS = "/api/v1/objects";
-
-/**
- * Custom metadata (GET/PATCH /api/v1/objects/{id}/metadata) is part of the
- * client API design but not implemented by the controller yet. Flip this to
- * true once it is; the GUI then enables the metadata editors.
- */
-export const METADATA_API_ENABLED = false;
 
 export function listObjects(signal?: AbortSignal): Promise<ObjectInfo[]> {
   return getJSON<ObjectInfo[]>(OBJECTS, signal);
@@ -31,15 +24,20 @@ export interface UploadHandle {
 }
 
 /**
- * Uploads a file as a new object (PUT /api/v1/objects, raw body). Uses
- * XMLHttpRequest because fetch() can't report upload progress; progress is
- * the browser's count of request bytes sent, computed entirely client-side.
+ * Uploads a file as a new object (POST /api/v1/objects, multipart/form-data
+ * with a "file" field and an optional "metadata" JSON field). The browser
+ * sends the file's name and type, which become the object's name and content
+ * type. Uses XMLHttpRequest because fetch() can't report upload progress;
+ * progress is the browser's count of request bytes sent.
  */
-export function uploadObject(file: Blob, onProgress: (p: Progress) => void): UploadHandle {
+export function uploadObject(file: File, custom: CustomMetadata, onProgress: (p: Progress) => void): UploadHandle {
   const xhr = new XMLHttpRequest();
+  const form = new FormData();
+  // Metadata first, so the controller can reject bad metadata before the data is stored.
+  if (Object.keys(custom).length > 0) form.append("metadata", JSON.stringify(custom));
+  form.append("file", file, file.name);
   const promise = new Promise<ObjectInfo>((resolve, reject) => {
-    xhr.open("PUT", OBJECTS);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.open("POST", OBJECTS);
     xhr.responseType = "text";
     xhr.upload.onprogress = (e) => onProgress({ loaded: e.loaded, total: e.lengthComputable ? e.total : file.size });
     xhr.onload = () => {
@@ -55,7 +53,7 @@ export function uploadObject(file: Blob, onProgress: (p: Progress) => void): Upl
     };
     xhr.onerror = () => reject(new ApiError(0, "network_error", "Connection to the controller failed during upload."));
     xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
-    xhr.send(file);
+    xhr.send(form);
   });
   return { promise, abort: () => xhr.abort() };
 }
@@ -112,24 +110,20 @@ export function saveBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-// --- Custom metadata (future: GET/PATCH /api/v1/objects/{id}/metadata) ---
+// --- Metadata (GET/PATCH /api/v1/objects/{id}/metadata) ---
 
-function metadataUnsupported(): never {
-  throw new ApiError(501, "not_implemented", "Custom metadata isn't supported by the controller yet.");
+/** System metadata, custom metadata and chunk locations, without the data. */
+export function getMetadata(id: string, signal?: AbortSignal): Promise<ObjectMetadata> {
+  return getJSON<ObjectMetadata>(`${OBJECTS}/${id}/metadata`, signal);
 }
 
-export async function getMetadata(id: string, signal?: AbortSignal): Promise<CustomMetadata> {
-  if (!METADATA_API_ENABLED) metadataUnsupported();
-  return getJSON<CustomMetadata>(`${OBJECTS}/${id}/metadata`, signal);
-}
-
-export async function patchMetadata(id: string, patch: CustomMetadata): Promise<CustomMetadata> {
-  if (!METADATA_API_ENABLED) metadataUnsupported();
+/** Changes name, content type or custom metadata; the data is not re-sent. */
+export async function patchMetadata(id: string, patch: MetadataPatch): Promise<ObjectMetadata> {
   const res = await fetch(`${OBJECTS}/${id}/metadata`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
   if (!res.ok) throw await errorFromResponse(res);
-  return (await res.json()) as CustomMetadata;
+  return (await res.json()) as ObjectMetadata;
 }

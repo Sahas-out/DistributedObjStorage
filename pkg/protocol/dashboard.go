@@ -88,6 +88,7 @@ const (
 	EventObjectUploaded     = "object_uploaded"
 	EventUploadFailed       = "upload_failed"
 	EventObjectDeleted      = "object_deleted"
+	EventMetadataUpdated    = "metadata_updated"
 	EventReplicaCorrupted   = "replica_corrupted"
 	EventReplicaMissing     = "replica_missing"
 	EventReplicaOrphaned    = "replica_orphaned"

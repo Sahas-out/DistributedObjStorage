@@ -59,6 +59,7 @@ type MetadataStore interface {
 	Get(ctx context.Context, objectID string) (metadata.Object, error)
 	List(ctx context.Context) ([]metadata.Object, error)
 	Delete(ctx context.Context, objectID string) error
+	UpdateMetadata(ctx context.Context, objectID string, u metadata.Update) (metadata.Object, error)
 }
 
 // Cluster is the part of the in-memory cluster registry the service needs.
@@ -96,12 +97,18 @@ func (s *Service) SetEvents(ev *events.Log) { s.events = ev }
 
 // Upload stores src chunk by chunk, holding one chunk in memory at a time.
 // Each chunk is written to rf workers in parallel, each copy under its own
-// chunk ID. The metadata is committed only after every copy is stored, so an
-// object either exists completely or not at all. On failure, the copies
-// already sent are removed.
-func (s *Service) Upload(ctx context.Context, src io.Reader) (_ metadata.Object, err error) {
+// chunk ID. The metadata, including spec, is committed only after every copy
+// is stored, so an object either exists completely or not at all. On failure,
+// including invalid metadata, the copies already sent are removed.
+func (s *Service) Upload(ctx context.Context, src io.Reader, spec UploadSpec) (_ metadata.Object, err error) {
 	objectID, err := newID()
 	if err != nil {
+		return metadata.Object{}, err
+	}
+	// Reject metadata that is already known to be invalid before any data
+	// is stored; it is checked again once Finish has run.
+	if err := spec.prepare(objectID); err != nil {
+		s.events.Record(protocol.EventUploadFailed, events.Warn, "upload failed: "+err.Error(), "", "")
 		return metadata.Object{}, err
 	}
 
@@ -148,9 +155,22 @@ func (s *Service) Upload(ctx context.Context, src io.Reader) (_ metadata.Object,
 		})
 	}
 
+	if spec.Finish != nil {
+		if err := spec.Finish(&spec); err != nil {
+			return metadata.Object{}, err
+		}
+	}
+	if err := spec.prepare(objectID); err != nil {
+		return metadata.Object{}, err
+	}
+
+	obj.Name = spec.Name
+	obj.ContentType = spec.ContentType
+	obj.Custom = spec.Custom
 	obj.ChunkCount = len(obj.Chunks)
 	obj.Checksum = hex.EncodeToString(whole.Sum(nil))
 	obj.CreatedAt = time.Now().UTC()
+	obj.UpdatedAt = obj.CreatedAt
 	if err := s.meta.Create(ctx, obj); err != nil {
 		return metadata.Object{}, fmt.Errorf("persist metadata: %w", err)
 	}
@@ -233,6 +253,11 @@ func (s *Service) Replicas(ctx context.Context, objectID string) (metadata.Objec
 		return metadata.Object{}, nil, err
 	}
 	return obj, s.cluster.ObjectReplicas(objectID), nil
+}
+
+// Locations returns where each replica of an object's chunks currently lives.
+func (s *Service) Locations(objectID string) []cluster.Location {
+	return s.cluster.ObjectReplicas(objectID)
 }
 
 // Delete removes an object. The metadata goes first, so the object

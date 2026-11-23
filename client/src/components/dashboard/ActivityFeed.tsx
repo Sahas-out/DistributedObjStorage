@@ -5,6 +5,7 @@ import { formatClock, shortId } from "../../lib/format";
 const icons: Record<string, string> = {
   object_uploaded: "⇪",
   object_deleted: "🗑",
+  metadata_updated: "✎",
   upload_failed: "✕",
   replica_corrupted: "⚠",
   replica_missing: "?",
